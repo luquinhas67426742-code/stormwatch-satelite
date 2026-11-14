@@ -22,6 +22,7 @@ WEST, EAST, SOUTH, NORTH = -85.0, -30.0, -57.0, 14.0
 ZOOMS = ((6, 86),)                  # z6 ≈ resolução nativa do infravermelho (2 km)
 KEEP_FRAMES = 12                     # 2 horas de animação
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
+VERSION = "wn1"                      # muda quando a paleta muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades
 def merc_y(lat):
@@ -338,8 +339,8 @@ def webp(img, q):
 def main():
     key = latest_key(); stamp, ms = stamp_of(key)
     index = kv_get_json("index.json") or {"frames": []}
-    if index.get("band") != BAND:
-        index = {"frames": []}  # trocou de canal: começa uma animação nova
+    if index.get("band") != BAND or index.get("ver") != VERSION:
+        index = {"frames": []}  # trocou de canal ou de paleta: começa uma animação nova
     if any(fr["stamp"] == stamp for fr in index["frames"]):
         print("Quadro", stamp, "já está no site. Nada a fazer."); return
     print("Processando", key)
@@ -349,11 +350,11 @@ def main():
         t = time.time(); im, box = render(sample, p, z); data = webp(im, q)
         print(f"z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6: raise SystemExit("Imagem grande demais para o KV.")
-        kv_put(f"frame-{stamp}-z{z}.webp", data, "image/webp", TTL)
+        kv_put(f"frame-{stamp}-z{z}-{VERSION}.webp", data, "image/webp", TTL)
         out[z] = box_bounds(z, box)
     frames = [fr for fr in index["frames"] if fr["stamp"] != stamp] + [{"stamp": stamp, "time": ms}]
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
-    index = {"updated": int(time.time() * 1000), "band": BAND, "satellite": "GOES-19",
+    index = {"updated": int(time.time() * 1000), "band": BAND, "ver": VERSION, "satellite": "GOES-19",
              "zooms": [z for z, _ in ZOOMS], "bounds": {f"z{z}": out[z] for z, _ in ZOOMS}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     print("Pronto:", stamp, "·", len(frames), "quadros no site")
