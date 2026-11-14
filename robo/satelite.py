@@ -20,7 +20,8 @@ BAND = "C13"                         # infravermelho 10,3 µm (2 km), funciona d
 # área do mapa (graus): América do Sul inteira
 WEST, EAST, SOUTH, NORTH = -85.0, -30.0, -57.0, 14.0
 ZOOMS = ((6, 86),)                  # z6 ≈ resolução nativa do infravermelho (2 km)
-KEEP_FRAMES = 12                     # 2 horas de animação
+KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
+MAX_PER_RUN = 18                     # quantos quadros que faltam ele pode fazer numa rodada
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
 VERSION = "wn1"                      # muda quando a paleta muda (força refazer as imagens)
 
@@ -44,17 +45,19 @@ def box_bounds(z, box):
     lat = lambda y: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
     return [lat(y1), lon(x0), lat(y0), lon(x1)]  # sul, oeste, norte, leste
 
-def latest_key():
-    now = dt.datetime.utcnow()
-    for back in range(0, 3):
+def recent_keys():
+    """Arquivos do GOES-19 das últimas horas (do mais novo pro mais velho)."""
+    now = dt.datetime.utcnow(); keys = []
+    for back in range(0, 4):
         t = now - dt.timedelta(hours=back)
         prefix = f"{PRODUCT}/{t:%Y}/{t.timetuple().tm_yday:03d}/{t:%H}/OR_{PRODUCT}-M6{BAND}_G19"
         r = requests.get(BUCKET, params={"list-type": "2", "prefix": prefix}, timeout=30)
         r.raise_for_status()
-        keys = re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
-        if keys:
-            return sorted(keys)[-1]
-    raise SystemExit("Nenhum arquivo GOES-19 encontrado nas últimas horas.")
+        keys += re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
+    keys = sorted(set(keys), reverse=True)
+    if not keys:
+        raise SystemExit("Nenhum arquivo GOES-19 encontrado nas últimas horas.")
+    return keys[:KEEP_FRAMES]
 
 def stamp_of(key):
     m = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})", key)
@@ -336,28 +339,49 @@ def webp(img, q):
     b = io.BytesIO(); img.convert("RGBA").save(b, "WEBP", quality=q, method=4); return b.getvalue()
 
 # ---------------------------------------------------------------- principal
-def main():
-    key = latest_key(); stamp, ms = stamp_of(key)
-    index = kv_get_json("index.json") or {"frames": []}
-    if index.get("band") != BAND or index.get("ver") != VERSION:
-        index = {"frames": []}  # trocou de canal ou de paleta: começa uma animação nova
-    if any(fr["stamp"] == stamp for fr in index["frames"]):
-        print("Quadro", stamp, "já está no site. Nada a fazer."); return
+def process(key, stamp):
     print("Processando", key)
     f = open_remote(key); p = proj_params(f); sample = make_sampler(f, p)
     out = {}
     for z, q in ZOOMS:
         t = time.time(); im, box = render(sample, p, z); data = webp(im, q)
-        print(f"z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
+        print(f"  z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6: raise SystemExit("Imagem grande demais para o KV.")
         kv_put(f"frame-{stamp}-z{z}-{VERSION}.webp", data, "image/webp", TTL)
         out[z] = box_bounds(z, box)
-    frames = [fr for fr in index["frames"] if fr["stamp"] != stamp] + [{"stamp": stamp, "time": ms}]
+    f.close()
+    return out
+
+def save_index(frames, bounds):
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
     index = {"updated": int(time.time() * 1000), "band": BAND, "ver": VERSION, "satellite": "GOES-19",
-             "zooms": [z for z, _ in ZOOMS], "bounds": {f"z{z}": out[z] for z, _ in ZOOMS}, "frames": frames}
+             "zooms": [z for z, _ in ZOOMS], "bounds": {f"z{z}": bounds[z] for z, _ in ZOOMS}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
-    print("Pronto:", stamp, "·", len(frames), "quadros no site")
+    return frames
+
+def main():
+    keys = recent_keys()
+    index = kv_get_json("index.json") or {"frames": []}
+    if index.get("band") != BAND or index.get("ver") != VERSION:
+        index = {"frames": []}  # trocou de canal ou de paleta: começa uma animação nova
+    have = {fr["stamp"] for fr in index["frames"]}
+    todo = [(k, *stamp_of(k)) for k in keys]
+    todo = [t for t in todo if t[1] not in have][:MAX_PER_RUN]
+    if not todo:
+        print("Todos os quadros já estão no site. Nada a fazer."); return
+    print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
+    frames = list(index["frames"]); bounds = None
+    for i, (key, stamp, ms) in enumerate(todo):
+        try:
+            bounds = process(key, stamp)
+        except Exception as e:
+            print("  falhou:", e); continue
+        frames.append({"stamp": stamp, "time": ms})
+        if i % 4 == 0 or i == len(todo) - 1:   # salva o progresso de vez em quando
+            frames = save_index(frames, bounds)
+    if bounds:
+        frames = save_index(frames, bounds)
+    print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
 if __name__ == "__main__":
     main()
