@@ -2,11 +2,11 @@
 StormWatch Atlas · robô do satélite HD
 --------------------------------------
 A cada 10 minutos (GitHub Actions):
- 1. acha o arquivo mais novo do GOES-19 canal 2 (visível 0,64 µm, 0,5 km)
+ 1. acha o arquivo mais novo do GOES-19 canal 13 (infravermelho 10,3 µm, 2 km)
     no bucket público da NOAA na Amazon (noaa-goes19);
- 2. lê só o pedaço do Sul do Brasil;
- 3. reprojeta para o mapa (Web Mercator) na resolução total;
- 4. salva duas imagens WebP (z7 = leve, z8 = máxima) + um index.json
+ 2. lê só o pedaço da América do Sul;
+ 3. reprojeta para o mapa (Web Mercator) e pinta com realce colorido;
+ 4. salva a imagem WebP (z6, resolução nativa) + um index.json
     no Cloudflare KV, que o site lê.
 Variáveis (segredos do GitHub): CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE
 """
@@ -16,9 +16,10 @@ from PIL import Image
 
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo
-BAND = "C02"                         # visível 0,64 µm (0,5 km)
-# área do mapa (graus): Sul do Brasil + Paraguai + Uruguai + norte da Argentina
-WEST, EAST, SOUTH, NORTH = -66.0, -38.0, -36.0, -14.0
+BAND = "C13"                         # infravermelho 10,3 µm (2 km), funciona de dia e de noite
+# área do mapa (graus): América do Sul inteira
+WEST, EAST, SOUTH, NORTH = -85.0, -30.0, -57.0, 14.0
+ZOOMS = ((6, 86),)                  # z6 ≈ resolução nativa do infravermelho (2 km)
 KEEP_FRAMES = 12                     # 2 horas de animação
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
 
@@ -126,22 +127,22 @@ def geos_xy(lat, lon, p):
     return x, y
 
 def render(sample, p, z):
-    """Monta a imagem Web Mercator do zoom z. sample(x,y)->refletância (0..1)."""
+    """Monta a imagem Web Mercator do zoom z. sample(x,y)->temperatura (K)."""
     box = pixel_box(z); x0, y0, x1, y1 = box
     W, Hh = x1 - x0, y1 - y0; n = 256 * 2 ** z
-    img = np.zeros((Hh, W), np.uint8); alpha = np.zeros((Hh, W), np.uint8)
+    rgba = np.zeros((Hh, W, 4), np.uint8)
     lon = (np.arange(x0, x1) + 0.5) / n * 360 - 180
     for r0 in range(0, Hh, 400):
         rows = np.arange(y0 + r0, min(y1, y0 + r0 + 400)) + 0.5
         lat = np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * rows / n))))
         LON, LAT = np.meshgrid(lon, lat)
         gx, gy = geos_xy(LAT, LON, p)
-        refl = sample(gx, gy)
-        ok = np.isfinite(refl)
-        v = np.sqrt(np.clip(np.nan_to_num(refl), 0, 1)) * 255  # mesmo realce (raiz) da NOAA/CIRA
-        img[r0:r0 + len(rows)] = v.astype(np.uint8)
-        alpha[r0:r0 + len(rows)] = np.where(ok, 255, 0)
-    return Image.merge("LA", (Image.fromarray(img), Image.fromarray(alpha))), box
+        tk = sample(gx, gy)
+        ok = np.isfinite(tk)
+        rgb = colorize(np.nan_to_num(tk, nan=300.0) - 273.15)
+        rgba[r0:r0 + len(rows), :, :3] = rgb
+        rgba[r0:r0 + len(rows), :, 3] = np.where(ok, 255, 0)
+    return Image.fromarray(rgba, "RGBA"), box
 
 def make_sampler(f, p):
     xs = scaled(f["x"]); ys = scaled(f["y"])
@@ -176,6 +177,23 @@ def proj_params(f):
             "H": v("perspective_point_height") + v("semi_major_axis"),
             "lon0": math.radians(v("longitude_of_projection_origin"))}
 
+# Realce colorido (°C): cinza para nuvens quentes/baixas, cores para topos frios.
+IR_STOPS = [(50, (0, 0, 0)), (20, (55, 55, 55)), (0, (130, 130, 130)), (-20, (195, 195, 195)), (-31, (238, 238, 238)),
+            (-32, (110, 205, 255)), (-40, (30, 105, 230)), (-50, (5, 40, 145)), (-55, (0, 165, 60)), (-60, (170, 225, 0)),
+            (-65, (255, 232, 0)), (-70, (255, 145, 0)), (-75, (230, 25, 0)), (-80, (125, 0, 0)), (-85, (165, 0, 180)),
+            (-90, (245, 240, 255)), (-110, (120, 120, 120))]
+def ir_lut():
+    t = np.arange(60, -111, -0.25)  # 0,25 °C por passo
+    out = np.zeros((len(t), 3), np.float32)
+    temps = np.array([a for a, _ in IR_STOPS]); cols = np.array([c for _, c in IR_STOPS], np.float32)
+    for ch in range(3):
+        out[:, ch] = np.interp(-t, -temps, cols[:, ch])
+    return out.astype(np.uint8)
+LUT = ir_lut()
+def colorize(tc):
+    idx = np.clip(np.round((60 - tc) / 0.25), 0, len(LUT) - 1).astype(np.int64)
+    return LUT[idx]
+
 def webp(img, q):
     b = io.BytesIO(); img.convert("RGBA").save(b, "WEBP", quality=q, method=4); return b.getvalue()
 
@@ -183,12 +201,14 @@ def webp(img, q):
 def main():
     key = latest_key(); stamp, ms = stamp_of(key)
     index = kv_get_json("index.json") or {"frames": []}
+    if index.get("band") != BAND:
+        index = {"frames": []}  # trocou de canal: começa uma animação nova
     if any(fr["stamp"] == stamp for fr in index["frames"]):
         print("Quadro", stamp, "já está no site. Nada a fazer."); return
     print("Processando", key)
     f = open_remote(key); p = proj_params(f); sample = make_sampler(f, p)
     out = {}
-    for z, q in ((7, 80), (8, 82)):
+    for z, q in ZOOMS:
         t = time.time(); im, box = render(sample, p, z); data = webp(im, q)
         print(f"z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6: raise SystemExit("Imagem grande demais para o KV.")
@@ -196,8 +216,8 @@ def main():
         out[z] = box_bounds(z, box)
     frames = [fr for fr in index["frames"] if fr["stamp"] != stamp] + [{"stamp": stamp, "time": ms}]
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
-    index = {"updated": int(time.time() * 1000), "band": "C02", "satellite": "GOES-19",
-             "bounds": {"z7": out[7], "z8": out[8]}, "frames": frames}
+    index = {"updated": int(time.time() * 1000), "band": BAND, "satellite": "GOES-19",
+             "zooms": [z for z, _ in ZOOMS], "bounds": {f"z{z}": out[z] for z, _ in ZOOMS}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     print("Pronto:", stamp, "·", len(frames), "quadros no site")
 
