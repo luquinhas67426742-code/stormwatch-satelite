@@ -2,3 +2,4 @@ numpy
 requests
 pillow
 h5py
+scipy
