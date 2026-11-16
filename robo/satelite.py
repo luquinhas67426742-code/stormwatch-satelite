@@ -392,7 +392,8 @@ def draw(z, box, p, ir, vis, when):
                 a_vis *= 1.0 - smoothstep((tc - 22.0) / 10.0) * (rn < 0.55)   # salares/areia quentes não são nuvem
                 rgb = np.where(okv[..., None], gray[..., None].repeat(3, -1), rgb_ir)
                 a = np.where(okv, np.maximum(a_vis, a_ir * 0.6), a_ir)
-        a = np.where(okir, a, 0.0)
+        # V6: fundo OPACO de novo (chão e céu limpo aparecem como no satélite, sem ver o mapa por baixo)
+        a = np.where(okir, 1.0, 0.0)
         rgba[r0:r0 + len(rows), :, :3] = rgb
         rgba[r0:r0 + len(rows), :, 3] = a * 255.0
     return Image.fromarray(np.clip(rgba + 0.5, 0, 255).astype(np.uint8), "RGBA")
