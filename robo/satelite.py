@@ -483,5 +483,25 @@ def main():
         frames = save_index(frames, bounds)
     print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
+def loop(minutes):
+    """Fica ligado por alguns minutos, conferindo a cada 2 min se saiu imagem nova.
+    O GitHub só costuma rodar o robô 1 vez por hora, então ele mesmo fica esperando."""
+    import time as _t
+    fim = _t.time() + minutes * 60
+    while True:
+        try:
+            main()
+        except SystemExit as e:
+            print(e)
+        except Exception as e:
+            print("Rodada falhou:", e)
+        if _t.time() + 120 > fim:
+            break
+        _t.sleep(120)
+
 if __name__ == "__main__":
-    main()
+    mins = float(os.environ.get("LOOP_MINUTES", "0") or 0)
+    if mins > 0:
+        loop(mins)
+    else:
+        main()
