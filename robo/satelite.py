@@ -397,9 +397,12 @@ def draw(z, box, p, ir, vis, when):
         rgba[r0:r0 + len(rows), :, 3] = a * 255.0
     return Image.fromarray(np.clip(rgba + 0.5, 0, 255).astype(np.uint8), "RGBA")
 
-def webp(img, q):
-    """WebP SEM perda (lossless): o modo com perda borra as cores fortes e cria tons que não
-    existem na paleta. Se ficar grande demais para o KV, usa qualidade máxima com perda."""
+def webp(img, q, lossless=True):
+    """Base (2 km): WebP SEM perda, para as cores da paleta saírem exatas.
+    Detalhe (500 m): com perda em qualidade alta — cada cor ocupa vários pixels, então quase não
+    muda, e o arquivo fica ~4x menor (carrega bem mais rápido no site)."""
+    if not lossless:
+        b = io.BytesIO(); img.save(b, "WEBP", quality=q, alpha_quality=100, method=4); return b.getvalue()
     b = io.BytesIO(); img.save(b, "WEBP", lossless=True, quality=60, method=3, exact=True)
     if b.tell() < 22e6:
         return b.getvalue()
@@ -428,9 +431,9 @@ def process(ir_key, vis_key, stamp, when):
             print("  visível falhou, usando só infravermelho:", e)
     out = {}
     for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
-                                         (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 80)):
+                                         (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
         t = time.time(); box = pixel_box(z, w, e, s, n)
-        im = draw(z, box, p, irg, visg, when); data = webp(im, q)
+        im = draw(z, box, p, irg, visg, when); data = webp(im, q, lossless=(z == BASE_Z))
         print(f"  z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
             raise RuntimeError("Imagem grande demais para o KV.")
