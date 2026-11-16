@@ -375,7 +375,8 @@ def draw(z, box, p, ir, vis, when):
         #  - topos frios (-20 °C ou menos, parte colorida da paleta): cor exata e 100% opaca;
         #  - parte cinza da paleta (nuvem morna): transparência gradual até sumir no chão quente.
         colored = tc <= -20.5
-        a_ir = np.where(colored, 1.0, smoothstep((15.0 - tc) / 35.0))
+        # chão/céu limpo (+15 °C ou mais) some; nuvem a partir de +5 °C já fica opaca (cinza firme, sem desbotar)
+        a_ir = np.where(colored, 1.0, smoothstep((15.0 - tc) / 10.0))
         rgb, a = rgb_ir, a_ir
         if vis is not None:
             # De dia o visível só entra na parte CINZA (dá a textura fina de 500 m das nuvens
@@ -413,8 +414,8 @@ def is_daylight(when):
 def process(ir_key, vis_key, stamp, when):
     print("Processando", stamp, "(dia)" if vis_key else "(noite)")
     fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
-    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0 if vis_key else 0.35, fill=300.0)
-    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.6, fill=300.0)  # 2 km esticado p/ 500 m: suaviza
+    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
+    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0)  # sem desfoque: mantém o contraste
     fi.close()
     vis_base = vis_det = None
     if vis_key:
