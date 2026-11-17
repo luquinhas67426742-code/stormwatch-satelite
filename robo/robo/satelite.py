@@ -32,7 +32,7 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd2"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd3"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -239,12 +239,7 @@ def ir_lut():
     temps = np.array([a for a, _ in IR_STOPS]); cols = np.array([c for _, c in IR_STOPS], np.float32)
     for ch in range(3):
         out[:, ch] = np.interp(-t, -temps, cols[:, ch])
-    # nuvens "mornas" (acima de -20 °C): em vez do cinza escuro do Weathernerds, cinza claro
-    # (de 150 a 235), porque o fundo agora é transparente e nuvem escura parece sujeira no mapa
-    warm = t > -20.5
-    g = np.interp(t[warm], [-20.5, 25.0], [235.0, 150.0])
-    out[warm] = g[:, None]
-    return out.astype(np.float32)
+    return np.round(out).astype(np.float32)   # paleta Weathernerds exata, sem nenhuma mudança
 LUT = ir_lut()
 def ir_colors(tc):
     idx = np.clip(np.round((60 - tc) / 0.25), 0, len(LUT) - 1).astype(np.int64)
@@ -376,39 +371,44 @@ def draw(z, box, p, ir, vis, when):
         tc = ir.sample(gx, gy) - 273.15
         okir = np.isfinite(tc); tc = np.nan_to_num(tc, nan=40.0)
         rgb_ir = ir_colors(tc)
-        # nuvem pelo infravermelho: 0 (transparente) com +18 °C ou mais, 1 com -12 °C ou menos
-        a_ir = smoothstep((18.0 - tc) / 30.0)
+        # Cores SEMPRE da paleta Weathernerds, nunca misturadas:
+        #  - topos frios (-20 °C ou menos, parte colorida da paleta): cor exata e 100% opaca;
+        #  - parte cinza da paleta (nuvem morna): transparência gradual até sumir no chão quente.
+        colored = tc <= -20.5
+        # chão/céu limpo (+15 °C ou mais) some; nuvem a partir de +5 °C já fica opaca (cinza firme, sem desbotar)
+        a_ir = np.where(colored, 1.0, smoothstep((15.0 - tc) / 10.0))
         rgb, a = rgb_ir, a_ir
         if vis is not None:
+            # De dia o visível só entra na parte CINZA (dá a textura fina de 500 m das nuvens
+            # baixas); a parte colorida continua sendo a cor exata do infravermelho.
             cz = cos_zenith(LAT, LON, when)
-            day = smoothstep((cz - 0.03) / 0.17)          # transição suave no terminador
+            day = smoothstep((cz - 0.03) / 0.17)
             if np.any(day > 0):
                 rf = vis.sample(gx, gy)
-                okv = np.isfinite(rf); rf = np.nan_to_num(rf, nan=0.0)
-                rn = rf / np.clip(cz, 0.15, 1.0)          # corrige o Sol baixo (tarde/manhã)
-                gray = 255.0 * np.clip(rn, 0, 1.05) ** 0.55   # gama: realça nuvem fina sem lavar
-                # nuvem pelo visível: chão costuma ficar abaixo de 0,12; nuvem acima de ~0,32
+                okv = np.isfinite(rf) & (day > 0.5) & ~colored
+                rn = np.nan_to_num(rf, nan=0.0) / np.clip(cz, 0.15, 1.0)
+                gray = 255.0 * np.clip(rn, 0, 1.0) ** 0.6
                 a_vis = smoothstep((rn - 0.12) / 0.20)
-                # chão muito claro e quente (salares, areia) não é nuvem
-                a_vis *= 1.0 - smoothstep((tc - 22.0) / 10.0) * (rn < 0.55)
-                # topos frios (tempestade) ganham a cor do infravermelho por cima do visível
-                cold = smoothstep((-28.0 - tc) / 22.0) * 0.85
-                rgb_day = gray[..., None] * (1 - cold[..., None]) + rgb_ir * cold[..., None]
-                a_day = np.maximum(a_vis, cold)
-                a_day = np.where(okv, a_day, a_ir)
-                rgb_day = np.where(okv[..., None], rgb_day, rgb_ir)
-                d = day[..., None]
-                rgb = rgb_day * d + rgb_ir * (1 - d)
-                a = a_day * day + a_ir * (1 - day)
-        a = np.where(okir, a, 0.0)
+                a_vis *= 1.0 - smoothstep((tc - 22.0) / 10.0) * (rn < 0.55)   # salares/areia quentes não são nuvem
+                rgb = np.where(okv[..., None], gray[..., None].repeat(3, -1), rgb_ir)
+                a = np.where(okv, np.maximum(a_vis, a_ir * 0.6), a_ir)
+        # V6: fundo OPACO de novo (chão e céu limpo aparecem como no satélite, sem ver o mapa por baixo)
+        a = np.where(okir, 1.0, 0.0)
         rgba[r0:r0 + len(rows), :, :3] = rgb
         rgba[r0:r0 + len(rows), :, 3] = a * 255.0
-    # borda das nuvens um pouco mais macia (não mexe no miolo)
-    rgba[..., 3] = np.minimum(rgba[..., 3], gaussian_filter(rgba[..., 3], 0.8) * 1.15)
     return Image.fromarray(np.clip(rgba + 0.5, 0, 255).astype(np.uint8), "RGBA")
 
-def webp(img, q):
-    b = io.BytesIO(); img.save(b, "WEBP", quality=q, alpha_quality=90, method=4); return b.getvalue()
+def webp(img, q, lossless=True):
+    """Base (2 km): WebP SEM perda, para as cores da paleta saírem exatas.
+    Detalhe (500 m): com perda em qualidade alta — cada cor ocupa vários pixels, então quase não
+    muda, e o arquivo fica ~4x menor (carrega bem mais rápido no site)."""
+    if not lossless:
+        b = io.BytesIO(); img.save(b, "WEBP", quality=q, alpha_quality=100, method=4); return b.getvalue()
+    b = io.BytesIO(); img.save(b, "WEBP", lossless=True, quality=60, method=3, exact=True)
+    if b.tell() < 22e6:
+        return b.getvalue()
+    print("  lossless grande demais (%.1f MB); usando qualidade 95" % (b.tell() / 1e6))
+    b = io.BytesIO(); img.save(b, "WEBP", quality=95, alpha_quality=100, method=4); return b.getvalue()
 
 # ---------------------------------------------------------------- principal
 def is_daylight(when):
@@ -418,8 +418,8 @@ def is_daylight(when):
 def process(ir_key, vis_key, stamp, when):
     print("Processando", stamp, "(dia)" if vis_key else "(noite)")
     fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
-    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0 if vis_key else 0.35, fill=300.0)
-    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.6, fill=300.0)  # 2 km esticado p/ 500 m: suaviza
+    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
+    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0)  # sem desfoque: mantém o contraste
     fi.close()
     vis_base = vis_det = None
     if vis_key:
@@ -432,20 +432,27 @@ def process(ir_key, vis_key, stamp, when):
             print("  visível falhou, usando só infravermelho:", e)
     out = {}
     for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
-                                         (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 80)):
+                                         (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
         t = time.time(); box = pixel_box(z, w, e, s, n)
-        im = draw(z, box, p, irg, visg, when); data = webp(im, q)
+        im = draw(z, box, p, irg, visg, when); data = webp(im, q, lossless=(z == BASE_Z))
         print(f"  z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
             raise RuntimeError("Imagem grande demais para o KV.")
         kv_put(f"frame-{stamp}-z{z}-{VERSION}.webp", data, "image/webp", TTL)
         out[z] = box_bounds(z, box)
+        if z == BASE_Z:
+            # V8: versão LEVE (metade do tamanho, z5) para celular e zoom afastado: ~4x menos bytes
+            lite = im.resize((max(1, im.size[0] // 2), max(1, im.size[1] // 2)), Image.NEAREST)  # NEAREST: mantém só as cores exatas da paleta
+            ld = webp(lite, q, lossless=True)
+            print(f"  z{BASE_Z-1} (leve): {lite.size[0]}x{lite.size[1]} px, {len(ld)/1e6:.1f} MB")
+            kv_put(f"frame-{stamp}-z{BASE_Z-1}-{VERSION}.webp", ld, "image/webp", TTL)
+            out[BASE_Z - 1] = out[BASE_Z]
     return out
 
 def save_index(frames, bounds):
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
     index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
-             "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]},
+             "zooms": [BASE_Z - 1, BASE_Z], "bounds": {f"z{BASE_Z-1}": bounds.get(BASE_Z - 1, bounds[BASE_Z]), f"z{BASE_Z}": bounds[BASE_Z]},
              "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     return frames
@@ -469,19 +476,40 @@ def main():
     if not todo:
         print("Todos os quadros já estão no site. Nada a fazer."); return
     print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
-    frames = list(index["frames"]); bounds = None
+    frames = list(index["frames"]); bounds = None; saved = False
     for i, (key, stamp, ms, when) in enumerate(todo):
         vis_key = vis_by_start.get(scan_start(key)) if is_daylight(when) else None
         try:
             bounds = process(key, vis_key, stamp, when)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key)})
-        if i % 3 == 0 or i == len(todo) - 1:   # salva o progresso de vez em quando
-            frames = save_index(frames, bounds)
-    if bounds:
+        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "lite": True})
+        saved = False
+        if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
+            frames = save_index(frames, bounds); saved = True
+    if bounds and not saved:
         frames = save_index(frames, bounds)
     print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
+def loop(minutes):
+    """Fica ligado por alguns minutos, conferindo a cada 2 min se saiu imagem nova.
+    O GitHub só costuma rodar o robô 1 vez por hora, então ele mesmo fica esperando."""
+    import time as _t
+    fim = _t.time() + minutes * 60
+    while True:
+        try:
+            main()
+        except SystemExit as e:
+            print(e)
+        except Exception as e:
+            print("Rodada falhou:", e)
+        if _t.time() + 120 > fim:
+            break
+        _t.sleep(120)
+
 if __name__ == "__main__":
-    main()
+    mins = float(os.environ.get("LOOP_MINUTES", "0") or 0)
+    if mins > 0:
+        loop(mins)
+    else:
+        main()
