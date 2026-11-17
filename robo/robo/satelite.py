@@ -32,7 +32,7 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd3"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd4"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -410,6 +410,32 @@ def webp(img, q, lossless=True):
     print("  lossless grande demais (%.1f MB); usando qualidade 95" % (b.tell() / 1e6))
     b = io.BytesIO(); img.save(b, "WEBP", quality=95, alpha_quality=100, method=4); return b.getvalue()
 
+CHUNK = 512   # V9: a imagem é cortada em pedaços de 512 px; o site baixa só os pedaços que aparecem na tela
+
+def make_pack(img, q, lossless=True, with_lite=False):
+    """Pacote de um quadro: [SWPK][tamanho do cabeçalho][cabeçalho JSON][imagem leve][pedaços].
+    O site lê o cabeçalho, mostra a imagem leve (bem pixelada) na hora e depois baixa,
+    com 'pedidos parciais', só os pedaços de alta qualidade da parte que a pessoa está vendo."""
+    W, H = img.size
+    cols, rows = math.ceil(W / CHUNK), math.ceil(H / CHUNK)
+    blobs, chunks, off = [], [], 0
+    lite = None
+    if with_lite:
+        li = img.resize((max(1, W // 4), max(1, H // 4)), Image.NEAREST)  # 1/4 do tamanho, cores exatas
+        lb = webp(li, q, lossless=True)
+        lite = [off, len(lb), li.size[0], li.size[1]]; blobs.append(lb); off += len(lb)
+    for r in range(rows):
+        for c in range(cols):
+            box = (c * CHUNK, r * CHUNK, min(W, (c + 1) * CHUNK), min(H, (r + 1) * CHUNK))
+            part = img.crop(box)
+            if part.getextrema()[3][1] == 0:      # pedaço todo transparente: não precisa baixar
+                chunks.append(None); continue
+            b = webp(part, q, lossless=lossless)
+            chunks.append([off, len(b)]); blobs.append(b); off += len(b)
+    head = json.dumps({"w": W, "h": H, "cs": CHUNK, "cols": cols, "rows": rows, "lite": lite, "chunks": chunks},
+                      separators=(",", ":")).encode()
+    return b"SWPK" + len(head).to_bytes(4, "little") + head + b"".join(blobs)
+
 # ---------------------------------------------------------------- principal
 def is_daylight(when):
     lat, lon = np.meshgrid(np.linspace(SOUTH, NORTH, 30), np.linspace(WEST, EAST, 30))
@@ -434,25 +460,19 @@ def process(ir_key, vis_key, stamp, when):
     for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
                                          (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
         t = time.time(); box = pixel_box(z, w, e, s, n)
-        im = draw(z, box, p, irg, visg, when); data = webp(im, q, lossless=(z == BASE_Z))
-        print(f"  z{z}: {im.size[0]}x{im.size[1]} px, {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
+        im = draw(z, box, p, irg, visg, when)
+        data = make_pack(im, q, lossless=(z == BASE_Z), with_lite=(z == BASE_Z))
+        print(f"  z{z}: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
             raise RuntimeError("Imagem grande demais para o KV.")
-        kv_put(f"frame-{stamp}-z{z}-{VERSION}.webp", data, "image/webp", TTL)
+        kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", TTL)
         out[z] = box_bounds(z, box)
-        if z == BASE_Z:
-            # V8: versão LEVE (metade do tamanho, z5) para celular e zoom afastado: ~4x menos bytes
-            lite = im.resize((max(1, im.size[0] // 2), max(1, im.size[1] // 2)), Image.NEAREST)  # NEAREST: mantém só as cores exatas da paleta
-            ld = webp(lite, q, lossless=True)
-            print(f"  z{BASE_Z-1} (leve): {lite.size[0]}x{lite.size[1]} px, {len(ld)/1e6:.1f} MB")
-            kv_put(f"frame-{stamp}-z{BASE_Z-1}-{VERSION}.webp", ld, "image/webp", TTL)
-            out[BASE_Z - 1] = out[BASE_Z]
     return out
 
 def save_index(frames, bounds):
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
     index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
-             "zooms": [BASE_Z - 1, BASE_Z], "bounds": {f"z{BASE_Z-1}": bounds.get(BASE_Z - 1, bounds[BASE_Z]), f"z{BASE_Z}": bounds[BASE_Z]},
+             "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]}, "pack": True,
              "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     return frames
@@ -483,7 +503,7 @@ def main():
             bounds = process(key, vis_key, stamp, when)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "lite": True})
+        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True})
         saved = False
         if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
             frames = save_index(frames, bounds); saved = True
