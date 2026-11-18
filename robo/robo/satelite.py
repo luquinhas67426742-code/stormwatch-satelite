@@ -1,17 +1,17 @@
 """
-StormWatch Atlas · robô do satélite HD (versão 2)
+StormWatch Atlas · robô do satélite HD (versão 12)
 -------------------------------------------------
 A cada 10 minutos (GitHub Actions):
  1. acha os arquivos mais novos do GOES-19 (disco completo, bucket público da NOAA na Amazon):
       C13 = infravermelho 10,3 µm (2 km)  -> dia e noite
       C02 = visível 0,64 µm (500 m)       -> só de dia
  2. lê SÓ o pedaço da América do Sul (não usa o disco inteiro);
- 3. reprojeta para o mapa (Web Mercator, EPSG:3857) com interpolação BICÚBICA:
+ 3. reprojeta para o mapa (Web Mercator, EPSG:3857) por vizinho mais próximo:
       - imagem da América do Sul inteira em z6 (~2 km por pixel)
       - imagem de DETALHE do Sul/Sudeste/Centro-Oeste em z8 (~500 m por pixel, ~3700x4400 px)
  4. de dia: visível (C02) em tons de cinza + infravermelho colorido por cima só nos topos frios
-    (tempestades); à noite: só o infravermelho, suavizado. A transição no terminador é gradual;
- 5. o fundo sem nuvem (solo quente / céu limpo) fica 100% transparente, com borda suave nas nuvens;
+    (tempestades); à noite: só o infravermelho. A transição no terminador é gradual;
+ 5. a imagem permanece opaca nos pontos com leitura válida do infravermelho;
  6. salva as imagens WebP + index.json no Cloudflare KV, que o site lê.
 Variáveis (segredos do GitHub): CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE
 """
@@ -19,7 +19,7 @@ import io, json, math, os, re, sys, time, datetime as dt
 import numpy as np, requests
 from bisect import bisect_left, insort
 from PIL import Image
-from scipy.ndimage import map_coordinates, gaussian_filter
+from scipy.ndimage import map_coordinates
 
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
@@ -34,7 +34,8 @@ ARCHIVE_PER_RUN = 2                  # refaz o passado sem bloquear os quadros n
 ARCHIVE_TTL = 28 * 3600
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd4"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd5"
+LEGACY_VERSION = "hd4"
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -330,8 +331,8 @@ def geos_xy(lat, lon, p):
     return x, y
 
 class Grid:
-    """Pedaço recortado de um canal do GOES + amostrador bicúbico."""
-    def __init__(self, f, p, w, e, s, n, pad=1.0, step=1, smooth=0.0, fill=0.0):
+    """Amostra o pixel original mais próximo de cada ponto reprojetado."""
+    def __init__(self, f, p, w, e, s, n, pad=1.0, step=1):
         xs = f["x"]; ys = f["y"]
         sfx = float(np.ravel(xs.attrs["scale_factor"])[0]); ofx = float(np.ravel(xs.attrs["add_offset"])[0])
         sfy = float(np.ravel(ys.attrs["scale_factor"])[0]); ofy = float(np.ravel(ys.attrs["add_offset"])[0])
@@ -346,29 +347,19 @@ class Grid:
         if step > 1:   # média em blocos (reduz o visível de 500 m para a imagem base)
             h, w_ = (data.shape[0] // step) * step, (data.shape[1] // step) * step
             data = np.nanmean(data[:h, :w_].reshape(h // step, step, w_ // step, step), axis=(1, 3))
-        valid = np.isfinite(data)
-        data = np.where(valid, data, fill).astype(np.float64)
-        if smooth > 0:
-            data = gaussian_filter(data, smooth)
-        # coeficientes da spline cúbica (feito uma vez; depois cada ponto custa pouco)
-        from scipy.ndimage import spline_filter
-        self.coef = spline_filter(data, order=3, mode="nearest")
-        self.valid = valid.astype(np.float32)
-        self.lo, self.hi = float(np.nanmin(data)), float(np.nanmax(data))
+        self.data = data
         self.sfx, self.ofx, self.sfy, self.ofy = sfx * step, ofx + sfx * (step - 1) / 2, sfy * step, ofy + sfy * (step - 1) / 2
-        self.c0, self.r0, self.step = c0 / step, r0 / step, step
+        self.c0, self.r0 = c0 / step, r0 / step
         print(f"  janela {r1-r0}x{c1-c0} px (passo {step}) lida em {time.time()-t:.1f}s")
 
     def sample(self, gx, gy):
         cc = (gx - self.ofx) / self.sfx - self.c0
         rr = (gy - self.ofy) / self.sfy - self.r0
-        bad = ~np.isfinite(cc) | ~np.isfinite(rr)
-        cc = np.where(bad, -10, cc); rr = np.where(bad, -10, rr)
-        out = map_coordinates(self.coef, [rr, cc], order=3, prefilter=False, mode="nearest")
-        ok = map_coordinates(self.valid, [rr, cc], order=1, mode="constant", cval=0.0) > 0.5
-        out = np.clip(out, self.lo, self.hi)          # sem "anel" da spline em bordas fortes
-        out[bad | ~ok] = np.nan
-        return out
+        valid = np.isfinite(cc) & np.isfinite(rr)
+        cc = np.where(valid, cc, -1)
+        rr = np.where(valid, rr, -1)
+        return map_coordinates(self.data, [rr, cc], order=0, prefilter=False, mode="grid-constant", cval=np.nan)
+
 
 # ---------------------------------------------------------------- desenho
 def draw(z, box, p, ir, vis, when):
@@ -465,15 +456,15 @@ def is_daylight(when):
 def process(ir_key, vis_key, stamp, when, full=True, archive=True):
     print("Processando", stamp, "(dia)" if vis_key else "(noite)")
     fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
-    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
-    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0) if full else None  # sem desfoque: mantém o contraste
+    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH)
+    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH) if full else None
     fi.close()
     vis_base = vis_det = None
     if vis_key:
         try:
             fv = open_remote(vis_key, "/tmp/c02.nc")
-            vis_base = Grid(fv, p, WEST, EAST, SOUTH, NORTH, step=4, fill=0.0)    # 500 m -> 2 km (média)
-            vis_det = Grid(fv, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, step=1, fill=0.0) if full else None  # 500 m nativo
+            vis_base = Grid(fv, p, WEST, EAST, SOUTH, NORTH, step=4)    # 500 m -> 2 km (média)
+            vis_det = Grid(fv, p, D_WEST, D_EAST, D_SOUTH, D_NORTH) if full else None  # 500 m nativo
             fv.close(); os.remove("/tmp/c02.nc")
         except Exception as e:
             print("  visível falhou, usando só infravermelho:", e)
@@ -550,14 +541,19 @@ def main():
     if not candidates:
         raise SystemExit("Nenhum arquivo GOES-19 encontrado nas últimas horas.")
     index = kv_get_json("index.json") or {}
-    if index.get("ver") != VERSION:
+    if index.get("ver") not in (VERSION, LEGACY_VERSION):
         index = {}
-    frames = list(index.get("frames", []))
+    # Keep existing snapshots addressable by the version they were built with.
+    frames = {f["stamp"]: {**f, "ver": f.get("ver") or index["ver"]} for f in index.get("frames", [])}
     history = list(index.get("history", []))
-    have = {f["stamp"] for f in frames}
     archived = {f["stamp"] for f in history}
-    newest = candidates[0][2]
-    live = [item for item in candidates if item[1] not in have and item[2] >= newest - 3 * 3600000][:MAX_PER_RUN]
+    newest_stamp, newest = candidates[0][1:3]
+    live = [
+        item for item in candidates
+        if item[2] >= newest - 3 * 3600000 and (
+            item[1] not in frames or (item[1] == newest_stamp and frames[item[1]]["ver"] != VERSION)
+        )
+    ][:MAX_PER_RUN]
     visible = {}
     if live:
         try:
@@ -572,13 +568,14 @@ def main():
         except Exception as exc:
             print("Quadro ao vivo falhou:", exc)
             continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis), "pack": True, "micro": True})
+        frames[stamp] = {"stamp": stamp, "time": ms, "ver": VERSION, "detail": True, "day": bool(vis), "pack": True, "micro": True}
         if archived_now:
             history.append({"stamp": stamp, "time": ms, "day": bool(vis)})
             archived.add(stamp)
         changed = True
     if changed:
-        frames, history = save_index(frames, history)
+        recent, history = save_index(frames.values(), history)
+        frames = {f["stamp"]: f for f in recent}
 
     old_keys = list_keys(IR_BAND, hours=26, start=3) + [item[0] for item in candidates]
     older = [(k, *stamp_of(k)) for k in dict.fromkeys(old_keys)]
@@ -603,7 +600,8 @@ def main():
         history.append({"stamp": stamp, "time": ms, "day": bool(vis)})
         changed = True
     if changed:
-        frames, history = save_index(frames, history)
+        recent, history = save_index(frames.values(), history)
+        frames = {f["stamp"]: f for f in recent}
     print(f"Histórico: {len(frames)} quadros HD, {len(history)} arquivados.")
 
 def loop(minutes):
