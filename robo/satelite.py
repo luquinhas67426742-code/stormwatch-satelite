@@ -23,8 +23,8 @@ from scipy.ndimage import map_coordinates, gaussian_filter
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
 IR_BAND, VIS_BAND = "C13", "C02"
-# América do Sul inteira (imagem base, z6)
-WEST, EAST, SOUTH, NORTH = -85.0, -30.0, -57.0, 14.0
+# V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
+WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 56.0
 BASE_Z = 6
 # recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF
 D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
@@ -32,7 +32,7 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd6"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd7"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -462,7 +462,7 @@ def process(ir_key, vis_key, stamp, when):
         data = make_pack(im, q, lossless=True, with_lite=(z == BASE_Z))   # V10: sem perda = pixel exato
         if len(data) > 23e6:
             print("  pacote sem perda grande demais; usando qualidade 95 no detalhe")
-            data = make_pack(im, 95, lossless=(z == BASE_Z), with_lite=(z == BASE_Z))
+            data = make_pack(im, 95, lossless=False, with_lite=(z == BASE_Z))   # V15: base das Américas pode ficar grande
         print(f"  z{z}: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
             raise RuntimeError("Imagem grande demais para o KV.")
