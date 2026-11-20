@@ -25,6 +25,7 @@ def simp(pts, tol):
     return [[round(p[0], 2), round(p[1], 2)] for p, k in zip(pts, keep) if k]
 
 def main():
+    import os; os.makedirs("dados", exist_ok=True)
     j = requests.get(URL, timeout=120).json()
     out = {"na": [], "ca": [], "sa": []}
     for f in j["features"]:
