@@ -10,6 +10,7 @@ Quando sai (00z e 12z):
  3. divide em 16 blocos e grava no Cloudflare KV (o mesmo do satélite) + ecmwf-index.json.
 Gravações no KV: 18 por rodada (2 rodadas por dia = 36 por dia).
 V2: também monta o mapa da aba Tempo (wx-ecmwf.json), grade de 1,25°.
+V3: chuva e nuvens nos blocos e 4 dias (0–96 h) para a previsão do Home.
 Variáveis (segredos do GitHub): CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE
 Fonte: ECMWF Open Data · https://www.ecmwf.int/en/forecasts/datasets/open-data
 """
@@ -20,20 +21,21 @@ HOSTS = ["https://data.ecmwf.int/forecasts",
          "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"]
 LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
 PL = ["t", "r", "u", "v", "gh"]
-SFC = ["2t", "2d", "sp", "msl", "10u", "10v", "tp"]
-STEPS = list(range(0, 61, 3))
+SFC = ["2t", "2d", "sp", "msl", "10u", "10v", "tp", "tcc"]
+STEPS = list(range(0, 97, 3))                 # V3: 4 dias (Home)
 SOUTH, NORTH, WEST, EAST = -40.0, 10.0, -80.0, -30.0       # área do Skew-T
 # V2: mapa da aba Tempo (mesma área que o site já usa), grade de 1,25°
 WX_S, WX_N, WX_W, WX_E, WX_STEP = -57.5, 12.5, -85.0, -30.0, 1.25
 CROP_S, CROP_N, CROP_W, CROP_E = min(SOUTH, WX_S), max(NORTH, WX_N), min(WEST, WX_W), max(EAST, WX_E)
 RES = 0.25
 TILE = 12.5                                   # graus por bloco (4 x 4 blocos)
-TTL = 36 * 3600
+TTL = 40 * 3600
 MISS = -32768
 
 # ordem das variáveis guardadas em cada bloco: por nível t,d,u,v,z e depois a superfície
-VARS = [f"{k}{p}" for p in LEVELS for k in ("t", "d", "u", "v", "z")] + ["t2", "d2", "sp", "msl", "u10", "v10"]
-SCALE = {"t": 100, "d": 100, "u": 100, "v": 100, "z": 1, "t2": 100, "d2": 100, "sp": 10, "msl": 10, "u10": 100, "v10": 100}
+VARS = [f"{k}{p}" for p in LEVELS for k in ("t", "d", "u", "v", "z")] + ["t2", "d2", "sp", "msl", "u10", "v10", "tp", "tcc"]
+SCALE = {"t": 100, "d": 100, "u": 100, "v": 100, "z": 1, "t2": 100, "d2": 100, "sp": 10, "msl": 10, "u10": 100, "v10": 100,
+         "tp": 10, "tcc": 10}                 # tp = chuva acumulada desde o início (mm), tcc = nuvens (%)
 
 def scale_of(name):
     return SCALE.get(name, SCALE.get(name[0], 1))
@@ -62,6 +64,14 @@ def kv_put(key, data, content_type, ttl=None):
             return
         print("KV respondeu", r.status_code, r.text[:200]); time.sleep(3 * (k + 1))
     r.raise_for_status()
+
+def kv_delete(key):
+    try:
+        r = requests.delete(kv_url(key), headers=kv_headers(), timeout=60)
+        if not r.ok and r.status_code != 404:
+            print("  não apagou", key, r.status_code)
+    except requests.RequestException as e:
+        print("  não apagou", key, e)
 
 # ---------------------------------------------------------------- ECMWF open data
 def file_path(run, step):
@@ -168,7 +178,7 @@ def decode(blob):
             sub = vals[np.ix_(rows, cols)].astype(np.float64)
             sub[sub == miss] = np.nan
             grid = (lats[rows], lons[cols])
-            name = {"2t": "t2", "2d": "d2", "sp": "sp", "msl": "msl", "10u": "u10", "10v": "v10", "tp": "tp"}.get(short)
+            name = {"2t": "t2", "2d": "d2", "sp": "sp", "msl": "msl", "10u": "u10", "10v": "v10", "tp": "tp", "tcc": "tcc"}.get(short)
             if lev is not None:
                 name = {"t": "t", "r": "r", "u": "u", "v": "v", "gh": "z"}.get(short)
                 name = name and f"{name}{int(lev)}"
@@ -197,6 +207,9 @@ def to_store(fields):
     out["sp"] = fields["sp"] / 100 if "sp" in fields else None
     out["msl"] = fields["msl"] / 100 if "msl" in fields else None
     out["u10"], out["v10"] = fields.get("u10"), fields.get("v10")
+    out["tp"] = fields["tp"] * 1000 if "tp" in fields else None
+    c = fields.get("tcc")
+    out["tcc"] = None if c is None else (c * 100 if np.nanmax(c) <= 1.5 else c)
     return out
 
 def add_wx(wx, f, wy, wxx, tp_prev, dh):
@@ -233,7 +246,7 @@ def main():
     run, host = latest_run()
     stamp = run.strftime("%Y%m%d%H")
     old = kv_get_json("ecmwf-index.json")
-    if old and old.get("stamp") == stamp and not os.environ.get("FORCE"):
+    if old and old.get("stamp") == stamp and old.get("version") == 3 and not os.environ.get("FORCE"):
         print("Rodada", stamp, "já está no KV. Nada a fazer.")
         return
     print("Rodada nova:", stamp, "de", host)
@@ -290,12 +303,16 @@ def main():
     index = {"stamp": stamp, "run": int(run.timestamp()), "steps": STEPS, "have": got, "levels": LEVELS,
              "vars": VARS, "scale": [scale_of(v) for v in VARS], "missing": MISS, "res": RES,
              "south": SOUTH, "west": WEST, "tile": TILE, "tiles": tiles, "made": int(time.time()),
-             "source": "ECMWF IFS 0.25° open data · CC-BY-4.0"}
+             "source": "ECMWF IFS 0.25° open data · CC-BY-4.0", "version": 3}
     wx_out = {"source": "ECMWF IFS 0,25° · dados abertos (CC BY 4.0)", "made": int(time.time() * 1000), "run": int(run.timestamp() * 1000),
               "step": WX_STEP, "lats": wx_lats, "lons": wx_lons, "times": wx_times, **wx}
     kv_put("wx-ecmwf.json", json.dumps(wx_out, separators=(",", ":")), "application/json", TTL)
     print("  mapa do tempo:", len(wx_lats), "x", len(wx_lons), "pontos,", len(wx_times), "horas")
     kv_put("ecmwf-index.json", json.dumps(index), "application/json")
+    # apaga os blocos da rodada anterior (economiza espaço no KV, que tem limite de 1 GB)
+    if old and old.get("stamp") != stamp:
+        for t in old.get("tiles", []):
+            kv_delete(t["key"])
     print("Pronto:", len(tiles), "blocos,", len(got), "horas.")
 
 if __name__ == "__main__":
