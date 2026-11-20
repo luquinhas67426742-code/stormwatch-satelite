@@ -6,7 +6,7 @@ URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geo
 def simp(pts, tol):
     n = len(pts)
     if n < 5:
-        return pts
+        return [[round(p[0], 2), round(p[1], 2)] for p in pts]
     keep = [False] * n; keep[0] = keep[-1] = True; mid = n // 2; keep[mid] = True
     st = [(0, mid), (mid, n - 1)]
     while st:
@@ -49,6 +49,24 @@ def main():
             r = simp(o, {"ca": 0.04, "sa": 0.1, "na": 0.12}[g])
             if len(r) >= 4:
                 out[g].append(r)
+    # V2: divisas de estados/províncias (EUA, Canadá, México) como linhas
+    lines = []
+    try:
+        lj = requests.get(URL.replace("ne_50m_admin_0_countries", "ne_50m_admin_1_states_provinces_lines"), timeout=120).json()
+        for f in lj["features"]:
+            P = f["properties"]; code = P.get("ADM0_A3") or P.get("adm0_a3") or ""
+            if code not in ("USA", "CAN", "MEX"):
+                continue
+            g = f["geometry"]; parts = [g["coordinates"]] if g["type"] == "LineString" else g["coordinates"]
+            for ln in parts:
+                if all(pt[1] > 66 for pt in ln):
+                    continue
+                r = simp(ln, 0.05)
+                if len(r) >= 2:
+                    lines.append(r)
+    except Exception as e:
+        print("linhas de estados falharam:", e)
+    out["states"] = lines
     json.dump({"source": "Natural Earth 1:50m (domínio público)", **out}, open("dados/geo-americas.json", "w"), separators=(",", ":"))
     print({k: len(v) for k, v in out.items()})
 
