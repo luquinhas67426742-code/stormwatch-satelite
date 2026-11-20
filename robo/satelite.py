@@ -21,6 +21,8 @@ from PIL import Image
 from scipy.ndimage import map_coordinates, gaussian_filter
 
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
+BUCKET18 = "https://noaa-goes18.s3.amazonaws.com"   # V16: GOES-18 (GOES-Oeste) para o oeste da América do Norte
+WEST_CUT = -106.0                                       # a oeste disso usa o GOES-18 (fica mais perto da vertical, sem esticar)
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
 IR_BAND, VIS_BAND = "C13", "C02"
 # V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
@@ -32,7 +34,7 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd7"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd8"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -72,12 +74,13 @@ def cos_zenith(lat, lon, when):
     return np.sin(la) * math.sin(decl) + np.cos(la) * math.cos(decl) * np.cos(ha)
 
 # ---------------------------------------------------------------- lista de arquivos no S3
-def list_keys(band, hours=4):
+def list_keys(band, hours=4, sat="G19"):
     now = dt.datetime.utcnow(); keys = []
+    bucket = BUCKET18 if sat == "G18" else BUCKET
     for back in range(0, hours):
         t = now - dt.timedelta(hours=back)
-        prefix = f"{PRODUCT}/{t:%Y}/{t.timetuple().tm_yday:03d}/{t:%H}/OR_{PRODUCT}-M6{band}_G19"
-        r = requests.get(BUCKET, params={"list-type": "2", "prefix": prefix}, timeout=30)
+        prefix = f"{PRODUCT}/{t:%Y}/{t.timetuple().tm_yday:03d}/{t:%H}/OR_{PRODUCT}-M6{band}_{sat}"
+        r = requests.get(bucket, params={"list-type": "2", "prefix": prefix}, timeout=30)
         r.raise_for_status()
         keys += re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
     return sorted(set(keys), reverse=True)
@@ -274,7 +277,7 @@ def kv_put(key, data, content_type, ttl=None):
 def open_remote(key, path):
     import h5py
     t = time.time()
-    with requests.get(f"{BUCKET}/{key}", stream=True, timeout=180) as r:
+    with requests.get(f"{BUCKET18 if '_G18_' in key else BUCKET}/{key}", stream=True, timeout=180) as r:
         r.raise_for_status()
         with open(path, "wb") as out:
             for chunk in r.iter_content(8 * 1024 * 1024):
@@ -355,8 +358,9 @@ class Grid:
         return out
 
 # ---------------------------------------------------------------- desenho
-def draw(z, box, p, ir, vis, when):
-    """Imagem RGBA Web Mercator (z, box). ir/vis = Grid (vis pode ser None à noite)."""
+def draw(z, box, p, ir, vis, when, west=None):
+    """Imagem RGBA Web Mercator (z, box). ir/vis = Grid (vis pode ser None à noite).
+    west = (Grid do GOES-18, parâmetros) para a parte a oeste de WEST_CUT (V16)."""
     x0, y0, x1, y1 = box
     W, Hh = x1 - x0, y1 - y0; N = 256 * 2 ** z
     rgba = np.zeros((Hh, W, 4), np.float32)
@@ -367,6 +371,13 @@ def draw(z, box, p, ir, vis, when):
         LON, LAT = np.meshgrid(lon, lat)
         gx, gy = geos_xy(LAT, LON, p)
         tc = ir.sample(gx, gy) - 273.15
+        use18 = np.zeros(tc.shape, bool)
+        if west is not None and LON.min() < WEST_CUT:
+            g18, p18 = west
+            hx, hy = geos_xy(LAT, LON, p18)
+            t18 = g18.sample(hx, hy) - 273.15
+            use18 = (LON < WEST_CUT) & np.isfinite(t18)
+            tc = np.where(use18, t18, tc)
         okir = np.isfinite(tc); tc = np.nan_to_num(tc, nan=40.0)
         rgb_ir = ir_colors(tc)
         # Cores SEMPRE da paleta Weathernerds, nunca misturadas:
@@ -383,7 +394,7 @@ def draw(z, box, p, ir, vis, when):
             day = smoothstep((cz - 0.03) / 0.17)
             if np.any(day > 0):
                 rf = vis.sample(gx, gy)
-                okv = np.isfinite(rf) & (day > 0.5) & ~colored
+                okv = np.isfinite(rf) & (day > 0.5) & ~colored & ~use18 & (LON >= WEST_CUT)
                 rn = np.nan_to_num(rf, nan=0.0) / np.clip(cz, 0.15, 1.0)
                 gray = 255.0 * np.clip(rn, 0, 1.0) ** 0.6
                 a_vis = smoothstep((rn - 0.12) / 0.20)
@@ -439,8 +450,16 @@ def is_daylight(when):
     lat, lon = np.meshgrid(np.linspace(SOUTH, NORTH, 30), np.linspace(WEST, EAST, 30))
     return bool(np.any(cos_zenith(lat, lon, when) > 0.02))
 
-def process(ir_key, vis_key, stamp, when):
-    print("Processando", stamp, "(dia)" if vis_key else "(noite)")
+def process(ir_key, vis_key, stamp, when, ir18_key=None):
+    print("Processando", stamp, "(dia)" if vis_key else "(noite)", "+ GOES-18" if ir18_key else "")
+    west = None
+    if ir18_key:
+        try:
+            f18 = open_remote(ir18_key, "/tmp/c13_18.nc"); p18 = proj_params(f18)
+            west = (Grid(f18, p18, WEST, WEST_CUT + 2, SOUTH, NORTH, smooth=0.0, fill=300.0), p18)
+            f18.close(); os.remove("/tmp/c13_18.nc")
+        except Exception as e:
+            print("  GOES-18 falhou, usando só o GOES-19:", e); west = None
     fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
     ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
     ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0)  # sem desfoque: mantém o contraste
@@ -458,7 +477,7 @@ def process(ir_key, vis_key, stamp, when):
     for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
                                          (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
         t = time.time(); box = pixel_box(z, w, e, s, n)
-        im = draw(z, box, p, irg, visg, when)
+        im = draw(z, box, p, irg, visg, when, west if z == BASE_Z else None)
         data = make_pack(im, q, lossless=True, with_lite=(z == BASE_Z))   # V10: sem perda = pixel exato
         if len(data) > 23e6:
             print("  pacote sem perda grande demais; usando qualidade 95 no detalhe")
@@ -488,6 +507,12 @@ def main():
             vis_by_start[scan_start(k)] = k
     except Exception as e:
         print("Lista do visível falhou:", e)
+    g18_by_start = {}
+    try:
+        for k in list_keys(IR_BAND, sat="G18"):
+            g18_by_start[scan_start(k)] = k
+    except Exception as e:
+        print("Lista do GOES-18 falhou:", e)
     index = kv_get_json("index.json") or {"frames": []}
     if index.get("ver") != VERSION:
         index = {"frames": []}  # mudou o desenho: começa uma animação nova
@@ -501,7 +526,9 @@ def main():
     for i, (key, stamp, ms, when) in enumerate(todo):
         vis_key = vis_by_start.get(scan_start(key)) if is_daylight(when) else None
         try:
-            bounds = process(key, vis_key, stamp, when)
+            st = scan_start(key)
+            k18 = g18_by_start.get(st) or next((v for s_, v in g18_by_start.items() if s_[:11] == st[:11]), None)   # mesmo minuto
+            bounds = process(key, vis_key, stamp, when, k18)
         except Exception as e:
             print("  falhou:", e); continue
         frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True})
