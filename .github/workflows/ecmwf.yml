@@ -2,7 +2,12 @@ name: ECMWF (Skew-T)
 on:
   schedule:
     - cron: "17 */2 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Refazer a rodada mesmo se ela já estiver salva"
+        type: boolean
+        default: false
 concurrency:
   group: ecmwf
   cancel-in-progress: false
@@ -11,14 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
       - run: pip install numpy requests eccodes
       - run: python robo/ecmwf.py
         env:
+          FORCE: ${{ inputs.forcar && '1' || '' }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_KV_NAMESPACE: ${{ secrets.CF_KV_NAMESPACE }}
