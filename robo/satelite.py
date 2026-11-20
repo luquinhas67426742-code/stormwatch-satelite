@@ -517,7 +517,7 @@ def main():
 # V11: a cada ~4 min junta os raios (flashes) dos últimos 30 min sobre a América do Sul
 # e grava UM arquivo pequeno no KV ("glm-recent.json"). O site desenha as cruzinhas no radar.
 GLM_PRODUCT = "GLM-L2-LCFA"
-GLM_WINDOW = 30 * 60            # segundos de passado
+GLM_WINDOW = 60 * 60            # segundos de passado (V12: 1 hora, a aba Raios tem 15/30/60 min)
 GLM_EVERY = 4 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
 _glm_cache = {}                 # arquivo -> lista de (lat, lon, ms)
 
@@ -557,7 +557,7 @@ def glm_read(key):
         if "flash_quality_flag" in f:
             ok &= f["flash_quality_flag"][()] == 0
     t = glm_time(key) + 10000   # meio do arquivo de 20 s
-    return [(round(float(a), 3), round(float(b), 3), t) for a, b in zip(lat[ok], lon[ok])]
+    return [(round(float(a), 4), round(float(b), 4), t) for a, b in zip(lat[ok], lon[ok])]
 
 def glm_update():
     now = dt.datetime.now(dt.timezone.utc); now_ms = int(now.timestamp() * 1000)
@@ -577,12 +577,12 @@ def glm_update():
     base = min(p[2] for p in pts) if pts else now_ms
     flat = []
     for la, lo, t in pts:
-        flat += [int(round(la * 100)), int(round(lo * 100)), int((t - base) / 1000)]
+        flat += [int(round(la * 1000)), int(round(lo * 1000)), int((t - base) / 1000)]   # V13: 0,001° (~100 m)
     newest = max(glm_time(k) for k in keys) + 20000
-    body = json.dumps({"made": now_ms, "base": base, "newest": newest, "window": GLM_WINDOW, "n": len(pts), "p": flat},
+    body = json.dumps({"made": now_ms, "s": 1000, "base": base, "newest": newest, "window": GLM_WINDOW, "n": len(pts), "p": flat},
                       separators=(",", ":")).encode()
     kv_put("glm-recent.json", body, "application/json", 3600)
-    print(f"  raio: {len(pts)} raios em 30 min ({len(new)} arquivos novos), {len(body)/1e3:.0f} kB")
+    print(f"  raio: {len(pts)} raios na última hora ({len(new)} arquivos novos), {len(body)/1e3:.0f} kB")
 
 def glm_thread(stop_at):
     import threading
