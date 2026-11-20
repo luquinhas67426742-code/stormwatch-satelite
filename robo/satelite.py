@@ -1,25 +1,24 @@
 """
-StormWatch Atlas · robô do satélite HD (versão 13)
+StormWatch Atlas · robô do satélite HD (versão 2)
 -------------------------------------------------
 A cada 10 minutos (GitHub Actions):
  1. acha os arquivos mais novos do GOES-19 (disco completo, bucket público da NOAA na Amazon):
       C13 = infravermelho 10,3 µm (2 km)  -> dia e noite
       C02 = visível 0,64 µm (500 m)       -> só de dia
  2. lê SÓ o pedaço da América do Sul (não usa o disco inteiro);
- 3. reprojeta para o mapa (Web Mercator, EPSG:3857) por vizinho mais próximo:
+ 3. reprojeta para o mapa (Web Mercator, EPSG:3857) com interpolação BICÚBICA:
       - imagem da América do Sul inteira em z6 (~2 km por pixel)
       - imagem de DETALHE do Sul/Sudeste/Centro-Oeste em z8 (~500 m por pixel, ~3700x4400 px)
  4. de dia: visível (C02) em tons de cinza + infravermelho colorido por cima só nos topos frios
-    (tempestades); à noite: só o infravermelho. A transição no terminador é gradual;
- 5. a imagem permanece opaca nos pontos com leitura válida do infravermelho;
+    (tempestades); à noite: só o infravermelho, suavizado. A transição no terminador é gradual;
+ 5. o fundo sem nuvem (solo quente / céu limpo) fica 100% transparente, com borda suave nas nuvens;
  6. salva as imagens WebP + index.json no Cloudflare KV, que o site lê.
 Variáveis (segredos do GitHub): CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE
 """
 import io, json, math, os, re, sys, time, datetime as dt
 import numpy as np, requests
-from bisect import bisect_left, insort
 from PIL import Image
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import map_coordinates, gaussian_filter
 
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
@@ -30,13 +29,10 @@ BASE_Z = 6
 # recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF
 D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
 DETAIL_Z = 8
-ARCHIVE_PER_RUN = 2                  # refaz o passado sem bloquear os quadros novos
-ARCHIVE_TTL = 28 * 3600
-MAX_PER_RUN = 3                      # limita a recuperação de quadros HD antigos por rodada
-MAX_SOURCE_AGE_MINUTES = 35
+KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
+MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd5"
-LEGACY_VERSION = "hd4"
+VERSION = "hd6"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -76,30 +72,14 @@ def cos_zenith(lat, lon, when):
     return np.sin(la) * math.sin(decl) + np.cos(la) * math.cos(decl) * np.cos(ha)
 
 # ---------------------------------------------------------------- lista de arquivos no S3
-_hour_keys = {}
-
-def list_keys(band, hours=4, start=0):
-    now = dt.datetime.now(dt.timezone.utc)
-    keys = []
-    list_error = None
-    for back in range(start, hours):
+def list_keys(band, hours=4):
+    now = dt.datetime.utcnow(); keys = []
+    for back in range(0, hours):
         t = now - dt.timedelta(hours=back)
         prefix = f"{PRODUCT}/{t:%Y}/{t.timetuple().tm_yday:03d}/{t:%H}/OR_{PRODUCT}-M6{band}_G19"
-        if back >= 2 and prefix in _hour_keys:
-            keys.extend(_hour_keys[prefix]); continue
-        try:
-            r = requests.get(BUCKET, params={"list-type": "2", "prefix": prefix}, timeout=30 if start < 3 else 8)
-            r.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"Falha ao consultar {band} em {t:%Y-%m-%d %H} UTC: {exc}")
-            list_error = exc
-            continue
-        found = re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
-        if back >= 2:
-            _hour_keys[prefix] = found
-        keys.extend(found)
-    if not keys and start == 0 and list_error is not None:
-        raise list_error
+        r = requests.get(BUCKET, params={"list-type": "2", "prefix": prefix}, timeout=30)
+        r.raise_for_status()
+        keys += re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
     return sorted(set(keys), reverse=True)
 
 def scan_start(key):
@@ -336,8 +316,8 @@ def geos_xy(lat, lon, p):
     return x, y
 
 class Grid:
-    """Amostra o pixel original mais próximo de cada ponto reprojetado."""
-    def __init__(self, f, p, w, e, s, n, pad=1.0, step=1):
+    """Pedaço recortado de um canal do GOES + amostrador bicúbico."""
+    def __init__(self, f, p, w, e, s, n, pad=1.0, step=1, smooth=0.0, fill=0.0):
         xs = f["x"]; ys = f["y"]
         sfx = float(np.ravel(xs.attrs["scale_factor"])[0]); ofx = float(np.ravel(xs.attrs["add_offset"])[0])
         sfy = float(np.ravel(ys.attrs["scale_factor"])[0]); ofy = float(np.ravel(ys.attrs["add_offset"])[0])
@@ -352,19 +332,27 @@ class Grid:
         if step > 1:   # média em blocos (reduz o visível de 500 m para a imagem base)
             h, w_ = (data.shape[0] // step) * step, (data.shape[1] // step) * step
             data = np.nanmean(data[:h, :w_].reshape(h // step, step, w_ // step, step), axis=(1, 3))
-        self.data = data
+        valid = np.isfinite(data)
+        data = np.where(valid, data, fill).astype(np.float64)
+        if smooth > 0:
+            data = gaussian_filter(data, smooth)
+        # V10: PIXEL REAL — sem spline/suavização, cada ponto pega o pixel do satélite mais próximo
+        self.coef = data
+        self.valid = valid.astype(np.float32)
+        self.lo, self.hi = float(np.nanmin(data)), float(np.nanmax(data))
         self.sfx, self.ofx, self.sfy, self.ofy = sfx * step, ofx + sfx * (step - 1) / 2, sfy * step, ofy + sfy * (step - 1) / 2
-        self.c0, self.r0 = c0 / step, r0 / step
+        self.c0, self.r0, self.step = c0 / step, r0 / step, step
         print(f"  janela {r1-r0}x{c1-c0} px (passo {step}) lida em {time.time()-t:.1f}s")
 
     def sample(self, gx, gy):
         cc = (gx - self.ofx) / self.sfx - self.c0
         rr = (gy - self.ofy) / self.sfy - self.r0
-        valid = np.isfinite(cc) & np.isfinite(rr)
-        cc = np.where(valid, cc, -1)
-        rr = np.where(valid, rr, -1)
-        return map_coordinates(self.data, [rr, cc], order=0, prefilter=False, mode="grid-constant", cval=np.nan)
-
+        bad = ~np.isfinite(cc) | ~np.isfinite(rr)
+        cc = np.where(bad, -10, cc); rr = np.where(bad, -10, rr)
+        out = map_coordinates(self.coef, [rr, cc], order=0, prefilter=False, mode="nearest")
+        ok = map_coordinates(self.valid, [rr, cc], order=0, mode="constant", cval=0.0) > 0.5
+        out[bad | ~ok] = np.nan
+        return out
 
 # ---------------------------------------------------------------- desenho
 def draw(z, box, p, ir, vis, when):
@@ -442,14 +430,7 @@ def make_pack(img, q, lossless=True, with_lite=False):
                 chunks.append(None); continue
             b = webp(part, q, lossless=lossless)
             chunks.append([off, len(b)]); blobs.append(b); off += len(b)
-    micro = None
-    if with_lite:
-        # The first preview has 1/16 of the width and height of the full image.
-        tiny = img.resize((max(1, W // 16), max(1, H // 16)), Image.NEAREST)
-        data = webp(tiny, q, lossless=True)
-        micro = [off, len(data), *tiny.size]
-        blobs.append(data)
-    head = json.dumps({"w": W, "h": H, "cs": CHUNK, "cols": cols, "rows": rows, "lite": lite, "micro": micro, "chunks": chunks},
+    head = json.dumps({"w": W, "h": H, "cs": CHUNK, "cols": cols, "rows": rows, "lite": lite, "chunks": chunks},
                       separators=(",", ":")).encode()
     return b"SWPK" + len(head).to_bytes(4, "little") + head + b"".join(blobs)
 
@@ -458,196 +439,94 @@ def is_daylight(when):
     lat, lon = np.meshgrid(np.linspace(SOUTH, NORTH, 30), np.linspace(WEST, EAST, 30))
     return bool(np.any(cos_zenith(lat, lon, when) > 0.02))
 
-def process(ir_key, vis_key, stamp, when, full=True, archive=True):
+def process(ir_key, vis_key, stamp, when):
     print("Processando", stamp, "(dia)" if vis_key else "(noite)")
-    with open_remote(ir_key, "/tmp/c13.nc") as fi:
-        p = proj_params(fi)
-        ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH)
-        ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH) if full else None
+    fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
+    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
+    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0)  # sem desfoque: mantém o contraste
+    fi.close()
     vis_base = vis_det = None
     if vis_key:
         try:
-            with open_remote(vis_key, "/tmp/c02.nc") as fv:
-                vis_base = Grid(fv, p, WEST, EAST, SOUTH, NORTH, step=4)    # 500 m -> 2 km (média)
-                vis_det = Grid(fv, p, D_WEST, D_EAST, D_SOUTH, D_NORTH) if full else None  # 500 m nativo
+            fv = open_remote(vis_key, "/tmp/c02.nc")
+            vis_base = Grid(fv, p, WEST, EAST, SOUTH, NORTH, step=4, fill=0.0)    # 500 m -> 2 km (média)
+            vis_det = Grid(fv, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, step=1, fill=0.0)  # 500 m nativo
+            fv.close(); os.remove("/tmp/c02.nc")
         except Exception as e:
             print("  visível falhou, usando só infravermelho:", e)
-    if not full:
-        bounds = pixel_box(BASE_Z, WEST, EAST, SOUTH, NORTH)
-        half_box = tuple(x // 2 for x in bounds)
-        archive_frame(draw(BASE_Z - 1, half_box, p, ir_base, vis_base, when), stamp)
-        return bool(vis_base is not None), None
-    archive_image = None
+    out = {}
     for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
                                          (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
         t = time.time(); box = pixel_box(z, w, e, s, n)
         im = draw(z, box, p, irg, visg, when)
-        if archive and z == BASE_Z:
-            archive_image = im.resize((im.width // 2, im.height // 2), Image.NEAREST)
-        data = make_pack(im, q, lossless=(z == BASE_Z), with_lite=(z == BASE_Z))
+        data = make_pack(im, q, lossless=True, with_lite=(z == BASE_Z))   # V10: sem perda = pixel exato
+        if len(data) > 23e6:
+            print("  pacote sem perda grande demais; usando qualidade 95 no detalhe")
+            data = make_pack(im, 95, lossless=(z == BASE_Z), with_lite=(z == BASE_Z))
         print(f"  z{z}: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
             raise RuntimeError("Imagem grande demais para o KV.")
         kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", TTL)
-    return bool(vis_base is not None), archive_image
+        out[z] = box_bounds(z, box)
+    return out
 
-def archive_frame(img, stamp):
-    # Preserve the original footprint and exact palette in a smaller raster.
-    while True:
-        data = make_pack(img, 84, with_lite=True)
-        if len(data) <= 768 * 1024:
-            break
-        img = img.resize((max(1, img.width * 3 // 4), max(1, img.height * 3 // 4)), Image.NEAREST)
-    kv_put(f"frame-{stamp}-z{BASE_Z}-hist1.pack", data, "application/octet-stream", ARCHIVE_TTL)
-
-def save_index(frames, history):
-    now = int(time.time() * 1000)
-    recent = sorted((f for f in frames if f["time"] >= now - 215 * 60000), key=lambda f: f["time"])
-    archived = sorted((f for f in history if f["time"] >= now - 25 * 3600000), key=lambda f: f["time"])
-    base = box_bounds(BASE_Z, pixel_box(BASE_Z, WEST, EAST, SOUTH, NORTH))
-    detail = box_bounds(DETAIL_Z, pixel_box(DETAIL_Z, D_WEST, D_EAST, D_SOUTH, D_NORTH))
-    index = {"updated": now, "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
-             "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": base}, "pack": True,
-             "detail": {"z": DETAIL_Z, "bounds": detail}, "frames": recent,
-             "history": archived, "historyVersion": "hist1"}
-    kv_put("index.json", json.dumps(index, separators=(",", ":")), "application/json")
-    return recent, archived
-
-def pick_history(candidates, history, newest, limit=ARCHIVE_PER_RUN):
-    # Cover the day before filling small gaps, without delaying live processing.
-    available = sorted({newest, newest - 24 * 3600000, *(f["time"] for f in history)})
-    have = {f["stamp"] for f in history}
-    missing = [item for item in candidates if item[1] not in have and newest - 86400000 <= item[2] < newest]
-    chosen = []
-    if missing and not any(f['time'] <= newest - 23.75 * 3600000 for f in history):
-        first = min(missing, key=lambda item: item[2])
-        missing.remove(first)
-        insort(available, first[2])
-        chosen.append(first)
-    for _ in range(min(limit - len(chosen), len(missing))):
-        def distance(item):
-            i = bisect_left(available, item[2])
-            return min(item[2] - available[i - 1], available[i] - item[2]) if 0 < i < len(available) else 0
-        gap = max(missing, key=distance)
-        missing.remove(gap)
-        insort(available, gap[2])
-        chosen.append(gap)
-    return chosen
+def save_index(frames, bounds):
+    frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
+    index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
+             "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]}, "pack": True,
+             "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]}, "frames": frames}
+    kv_put("index.json", json.dumps(index), "application/json")
+    return frames
 
 def main():
-    candidates = [(k, *stamp_of(k)) for k in list_keys(IR_BAND)]
-    if not candidates:
+    ir_keys = list_keys(IR_BAND)[:KEEP_FRAMES]
+    if not ir_keys:
         raise SystemExit("Nenhum arquivo GOES-19 encontrado nas últimas horas.")
-    index = kv_get_json("index.json") or {}
-    if index.get("ver") not in (VERSION, LEGACY_VERSION):
-        index = {}
-    # Keep existing snapshots addressable by the version they were built with.
-    frames = {f["stamp"]: {**f, "ver": f.get("ver") or index["ver"]} for f in index.get("frames", [])}
-    history = list(index.get("history", []))
-    archived = {f["stamp"] for f in history}
-    newest_stamp, newest = candidates[0][1:3]
-    source_age = (time.time() * 1000 - newest) / 60000
-    print(f"Última varredura NOAA: {newest_stamp} UTC ({source_age:.1f} min atrás).")
-    live = [
-        item for item in candidates
-        if item[2] >= newest - 3 * 3600000 and (
-            item[1] not in frames or (item[1] == newest_stamp and frames[item[1]]["ver"] != VERSION)
-        )
-    ][:MAX_PER_RUN]
-    daylight = {stamp for _, stamp, _, when in live if is_daylight(when)}
-    visible = {}
-    if daylight:
+    vis_by_start = {}
+    try:
+        for k in list_keys(VIS_BAND):
+            vis_by_start[scan_start(k)] = k
+    except Exception as e:
+        print("Lista do visível falhou:", e)
+    index = kv_get_json("index.json") or {"frames": []}
+    if index.get("ver") != VERSION:
+        index = {"frames": []}  # mudou o desenho: começa uma animação nova
+    have = {fr["stamp"] for fr in index["frames"]}
+    todo = [(k, *stamp_of(k)) for k in ir_keys]
+    todo = [t for t in todo if t[1] not in have][:MAX_PER_RUN]
+    if not todo:
+        print("Todos os quadros já estão no site. Nada a fazer."); return
+    print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
+    frames = list(index["frames"]); bounds = None; saved = False
+    for i, (key, stamp, ms, when) in enumerate(todo):
+        vis_key = vis_by_start.get(scan_start(key)) if is_daylight(when) else None
         try:
-            visible = {scan_start(k): k for k in list_keys(VIS_BAND)}
-        except Exception as exc:
-            print("Lista do visível falhou:", exc)
-    published_latest = bool(frames) and max(f["time"] for f in frames.values()) >= newest
-    changed = False
-    archive_images = []
-    latest_error = None
-    for key, stamp, ms, when in live:
-        vis = visible.get(scan_start(key)) if stamp in daylight else None
-        try:
-            day, archive_image = process(key, vis, stamp, when, archive=stamp not in archived)
-        except Exception as exc:
-            print(f"Quadro ao vivo {stamp} falhou: {exc}")
-            if stamp == newest_stamp:
-                latest_error = exc
-            continue
-        frame = {"stamp": stamp, "time": ms, "ver": VERSION, "detail": True, "day": day, "pack": True, "micro": True}
-        frames[stamp] = frame
-        if archive_image is not None:
-            archive_images.append((frame, archive_image))
-        # Publish the first fresh HD frame as soon as both packs exist.
-        if stamp == newest_stamp or not published_latest:
-            save_index(frames.values(), history)
-            print(f"Quadro HD {stamp} publicado no índice.")
-            published_latest = True
-            continue
-        changed = True
-    if latest_error:
-        if changed:
-            save_index(frames.values(), history)
-        raise RuntimeError(f"Falha ao publicar a última varredura NOAA ({newest_stamp} UTC).") from latest_error
-    if source_age > MAX_SOURCE_AGE_MINUTES:
-        if changed:
-            save_index(frames.values(), history)
-        raise RuntimeError(f"A última varredura disponível na NOAA tem {source_age:.0f} min.")
-
-    for frame, image in archive_images:
-        try:
-            archive_frame(image, frame["stamp"])
-        except Exception as exc:
-            print(f"Não foi possível arquivar o quadro {frame['stamp']}: {exc}")
-            continue
-        history.append({field: frame[field] for field in ("stamp", "time", "day")})
-        changed = True
-    oldest = newest - 86400000
-    coverage = sorted({oldest, newest, *(f["time"] for f in history if oldest < f["time"] < newest)})
-    missing_history = []
-    if any(later - earlier > 25 * 60000 for earlier, later in zip(coverage, coverage[1:])):
-        old_keys = list_keys(IR_BAND, hours=26, start=4)
-        older = candidates + [(k, *stamp_of(k)) for k in old_keys]
-        # Cover the full day first, then fill the largest remaining gaps.
-        missing_history = pick_history(older, history, newest, limit=1 if archive_images else ARCHIVE_PER_RUN)
-    for key, stamp, ms, when in missing_history:
-        try:
-            vis = None
-            if is_daylight(when):
-                hours_ago = max(0, int((dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0) -
-                                         when.replace(minute=0, second=0, microsecond=0)).total_seconds() // 3600))
-                try:
-                    vis = next((k for k in list_keys(VIS_BAND, hours=hours_ago + 1, start=hours_ago)
-                                if scan_start(k) == scan_start(key)), None)
-                except Exception as exc:
-                    print("Visível histórico indisponível:", exc)
-            day, _ = process(key, vis, stamp, when, full=False)
-        except Exception as exc:
-            print("Quadro histórico falhou:", exc)
-            continue
-        history.append({"stamp": stamp, "time": ms, "day": day})
-        changed = True
-    if changed:
-        recent, history = save_index(frames.values(), history)
-    else:
-        recent = frames
-    print(f"Histórico: {len(recent)} quadros HD, {len(history)} arquivados.")
+            bounds = process(key, vis_key, stamp, when)
+        except Exception as e:
+            print("  falhou:", e); continue
+        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True})
+        saved = False
+        if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
+            frames = save_index(frames, bounds); saved = True
+    if bounds and not saved:
+        frames = save_index(frames, bounds)
+    print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
 def loop(minutes):
-    """Verifica novos quadros a cada dois minutos entre os disparos do GitHub."""
-    fim = time.monotonic() + minutes * 60
+    """Fica ligado por alguns minutos, conferindo a cada 2 min se saiu imagem nova.
+    O GitHub só costuma rodar o robô 1 vez por hora, então ele mesmo fica esperando."""
+    import time as _t
+    fim = _t.time() + minutes * 60
     while True:
-        error = None
         try:
             main()
-        except (Exception, SystemExit) as exc:
-            error = exc
-            print("Rodada falhou:", exc)
-        if time.monotonic() + 120 > fim:
-            if error is not None:
-                raise error
-            return
-        time.sleep(120)
+        except SystemExit as e:
+            print(e)
+        except Exception as e:
+            print("Rodada falhou:", e)
+        if _t.time() + 120 > fim:
+            break
+        _t.sleep(120)
 
 if __name__ == "__main__":
     mins = float(os.environ.get("LOOP_MINUTES", "0") or 0)
