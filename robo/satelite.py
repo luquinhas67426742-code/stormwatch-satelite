@@ -517,6 +517,7 @@ def main():
 # V11: a cada ~4 min junta os raios (flashes) dos últimos 30 min sobre a América do Sul
 # e grava UM arquivo pequeno no KV ("glm-recent.json"). O site desenha as cruzinhas no radar.
 GLM_PRODUCT = "GLM-L2-LCFA"
+GLM_W, GLM_E, GLM_S, GLM_N = -135.0, -25.0, -57.0, 56.0   # V14: raios também nos EUA, América Central e sul do Canadá
 GLM_WINDOW = 60 * 60            # segundos de passado (V12: 1 hora, a aba Raios tem 15/30/60 min)
 GLM_EVERY = 4 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
 _glm_cache = {}                 # arquivo -> lista de (lat, lon, ms)
@@ -553,7 +554,7 @@ def glm_read(key):
         if "flash_lat" not in f or f["flash_lat"].shape[0] == 0:
             return []
         lat, lon = glm_var(f, "flash_lat"), glm_var(f, "flash_lon")
-        ok = (lat >= SOUTH) & (lat <= NORTH) & (lon >= WEST) & (lon <= EAST)
+        ok = (lat >= GLM_S) & (lat <= GLM_N) & (lon >= GLM_W) & (lon <= GLM_E)   # V14: Américas (Sul, Central e do Norte)
         if "flash_quality_flag" in f:
             ok &= f["flash_quality_flag"][()] == 0
     t = glm_time(key) + 10000   # meio do arquivo de 20 s
