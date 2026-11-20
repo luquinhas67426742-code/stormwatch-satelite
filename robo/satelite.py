@@ -1,5 +1,5 @@
 """
-StormWatch Atlas · robô do satélite HD (versão 2)
+StormWatch Atlas · robô do satélite HD + raios GLM (versão 11)
 -------------------------------------------------
 A cada 10 minutos (GitHub Actions):
  1. acha os arquivos mais novos do GOES-19 (disco completo, bucket público da NOAA na Amazon):
@@ -512,11 +512,97 @@ def main():
         frames = save_index(frames, bounds)
     print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
+
+# ---------------------------------------------------------------- RAIOS (GLM do GOES-19)
+# V11: a cada ~4 min junta os raios (flashes) dos últimos 30 min sobre a América do Sul
+# e grava UM arquivo pequeno no KV ("glm-recent.json"). O site desenha as cruzinhas no radar.
+GLM_PRODUCT = "GLM-L2-LCFA"
+GLM_WINDOW = 30 * 60            # segundos de passado
+GLM_EVERY = 4 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
+_glm_cache = {}                 # arquivo -> lista de (lat, lon, ms)
+
+def glm_time(key):
+    m = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})(\d)", key)
+    y, doy, H, M, S, t = map(int, m.groups())
+    d = dt.datetime(y, 1, 1, tzinfo=dt.timezone.utc) + dt.timedelta(days=doy - 1, hours=H, minutes=M, seconds=S + t / 10)
+    return int(d.timestamp() * 1000)
+
+def glm_list(now):
+    keys = []
+    for back in (1, 0):
+        t = now - dt.timedelta(hours=back)
+        prefix = f"{GLM_PRODUCT}/{t:%Y}/{t.timetuple().tm_yday:03d}/{t:%H}/OR_{GLM_PRODUCT}_G19"
+        r = requests.get(BUCKET, params={"list-type": "2", "prefix": prefix}, timeout=30)
+        r.raise_for_status()
+        keys += re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
+    return keys
+
+def glm_var(f, name):
+    d = f[name]; a = d[()].astype(np.float64)
+    if d.attrs.get("_Unsigned", b"") in (b"true", "true") and d.dtype.kind == "i":
+        a = d[()].astype(d.dtype.str.replace("i", "u")).astype(np.float64)
+    sc, of = d.attrs.get("scale_factor"), d.attrs.get("add_offset")
+    if sc is not None: a = a * float(np.ravel(sc)[0])
+    if of is not None: a = a + float(np.ravel(of)[0])
+    return a
+
+def glm_read(key):
+    import h5py
+    r = requests.get(f"{BUCKET}/{key}", timeout=60); r.raise_for_status()
+    with h5py.File(io.BytesIO(r.content), "r") as f:
+        if "flash_lat" not in f or f["flash_lat"].shape[0] == 0:
+            return []
+        lat, lon = glm_var(f, "flash_lat"), glm_var(f, "flash_lon")
+        ok = (lat >= SOUTH) & (lat <= NORTH) & (lon >= WEST) & (lon <= EAST)
+        if "flash_quality_flag" in f:
+            ok &= f["flash_quality_flag"][()] == 0
+    t = glm_time(key) + 10000   # meio do arquivo de 20 s
+    return [(round(float(a), 3), round(float(b), 3), t) for a, b in zip(lat[ok], lon[ok])]
+
+def glm_update():
+    now = dt.datetime.now(dt.timezone.utc); now_ms = int(now.timestamp() * 1000)
+    keys = [k for k in glm_list(now) if now_ms - glm_time(k) <= GLM_WINDOW * 1000]
+    for k in list(_glm_cache):
+        if k not in keys:
+            del _glm_cache[k]
+    new = [k for k in keys if k not in _glm_cache]
+    for k in new:
+        try:
+            _glm_cache[k] = glm_read(k)
+        except Exception as e:
+            print("  raio: arquivo falhou", k.split("/")[-1][:40], e)
+    pts = [p for k in sorted(_glm_cache) for p in _glm_cache[k]]
+    if not keys:
+        print("  raio: nenhum arquivo GLM recente"); return
+    base = min(p[2] for p in pts) if pts else now_ms
+    flat = []
+    for la, lo, t in pts:
+        flat += [int(round(la * 100)), int(round(lo * 100)), int((t - base) / 1000)]
+    newest = max(glm_time(k) for k in keys) + 20000
+    body = json.dumps({"made": now_ms, "base": base, "newest": newest, "window": GLM_WINDOW, "n": len(pts), "p": flat},
+                      separators=(",", ":")).encode()
+    kv_put("glm-recent.json", body, "application/json", 3600)
+    print(f"  raio: {len(pts)} raios em 30 min ({len(new)} arquivos novos), {len(body)/1e3:.0f} kB")
+
+def glm_thread(stop_at):
+    import threading
+    def run():
+        while time.time() < stop_at:
+            t = time.time()
+            try:
+                glm_update()
+            except Exception as e:
+                print("  raio falhou:", e)
+            time.sleep(max(20, GLM_EVERY - (time.time() - t)))
+    th = threading.Thread(target=run, daemon=True); th.start(); return th
+
 def loop(minutes):
     """Fica ligado por alguns minutos, conferindo a cada 2 min se saiu imagem nova.
     O GitHub só costuma rodar o robô 1 vez por hora, então ele mesmo fica esperando."""
     import time as _t
     fim = _t.time() + minutes * 60
+    if os.environ.get("GLM", "1") != "0":
+        glm_thread(fim - 30)   # V11: raios rodam junto, numa linha separada
     while True:
         try:
             main()
