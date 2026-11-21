@@ -67,6 +67,31 @@ def main():
     except Exception as e:
         print("linhas de estados falharam:", e)
     out["states"] = lines
+    # V3: contorno de FORA de cada continente (países unidos), pro "respirar" da escolha de continente
+    try:
+        from shapely.geometry import shape, Polygon
+        from shapely.ops import unary_union
+        groups = {"na": [], "ca": [], "sa": []}
+        for f in j["features"]:
+            P = f["properties"]; code = P["ADM0_A3"]
+            if code in ("MEX", "USA", "CAN"): g = "na"
+            elif P["CONTINENT"] == "North America" and code not in ("GRL", "BMU", "SPM"): g = "ca"
+            elif P["CONTINENT"] == "South America" or code == "GUF": g = "sa"
+            else: continue
+            groups[g].append(shape(f["geometry"]).buffer(0))
+        for g, polys in groups.items():
+            u = unary_union(polys).buffer(0.06, join_style=2).buffer(-0.06, join_style=2)
+            parts = list(u.geoms) if hasattr(u, "geoms") else [u]
+            rings = []
+            for poly in parts:
+                cy = poly.centroid.y
+                if poly.area < {"ca": 0.15, "sa": 1.5, "na": 2}[g] or (g == "na" and cy > 66):
+                    continue
+                r = simp([list(c) for c in poly.exterior.coords], {"ca": 0.04, "sa": 0.08, "na": 0.1}[g])
+                if len(r) >= 4: rings.append(r)
+            out["outline_" + g] = rings
+    except Exception as e:
+        print("contorno dos continentes falhou:", e)
     json.dump({"source": "Natural Earth 1:50m (domínio público)", **out}, open("dados/geo-americas.json", "w"), separators=(",", ":"))
     print({k: len(v) for k, v in out.items()})
 
