@@ -364,7 +364,21 @@ class Grid:
         return out
 
 # ---------------------------------------------------------------- desenho
-def draw(z, box, p, ir, vis, when, west=None):
+STYLE = os.environ.get("SAT_STYLE", "v21")   # V22 pronto mas desligado até aprovar: "v22" = cores e contraste novos
+def vis_tone(rn, style):
+    """Brilho do visível (0..1 -> 0..255). V22: mais contraste (mar e chão mais escuros, nuvem mais branca)."""
+    if style == "v21":
+        return 255.0 * np.clip(rn, 0, 1.0) ** 0.6
+    x = np.clip((rn - 0.03) / 0.92, 0, 1) ** 0.45
+    return 255.0 * (0.6 * x + 0.4 * smoothstep(x))
+def cold_limit(lat, style):
+    """V22: a partir de que temperatura a nuvem vira COLORIDA. Perto dos polos o próprio chão
+    fica abaixo de -20 °C no inverno; lá só pinta de cor o que é bem mais frio que o chão."""
+    if style == "v21":
+        return np.full(lat.shape, -20.5)
+    return -20.5 - 24.0 * smoothstep((np.abs(lat) - 38.0) / 18.0)
+def draw(z, box, p, ir, vis, when, west=None, style=None):
+    style = style or STYLE
     """Imagem RGBA Web Mercator (z, box). ir/vis = Grid (vis pode ser None à noite).
     west = (Grid do GOES-18, parâmetros) para a parte a oeste de WEST_CUT (V16)."""
     x0, y0, x1, y1 = box
@@ -398,10 +412,15 @@ def draw(z, box, p, ir, vis, when, west=None):
             use18 = f18 & ((w18 > 0.5) | ~f19)
         okir = np.isfinite(tc); tc = np.nan_to_num(tc, nan=40.0)
         rgb_ir = ir_colors(tc)
+        lim = cold_limit(LAT, style)
         # Cores SEMPRE da paleta Weathernerds, nunca misturadas:
         #  - topos frios (-20 °C ou menos, parte colorida da paleta): cor exata e 100% opaca;
         #  - parte cinza da paleta (nuvem morna): transparência gradual até sumir no chão quente.
-        colored = tc <= -20.5
+        colored = tc <= lim
+        if style != "v21":   # V22: chão gelado (entre -20 e o limite) fica cinza claro, não azul de tempestade
+            gl = np.clip(191.0 + (-20.5 - tc) * 1.6, 0, 238.0)
+            cold_ground = (tc <= -20.5) & ~colored
+            rgb_ir = np.where(cold_ground[..., None], gl[..., None].repeat(3, -1), rgb_ir)
         # chão/céu limpo (+15 °C ou mais) some; nuvem a partir de +5 °C já fica opaca (cinza firme, sem desbotar)
         a_ir = np.where(colored, 1.0, smoothstep((15.0 - tc) / 10.0))
         rgb, a = rgb_ir, a_ir
@@ -412,9 +431,9 @@ def draw(z, box, p, ir, vis, when, west=None):
             day = smoothstep((cz - 0.03) / 0.17)
             if np.any(day > 0):
                 rf = vis.sample(gx, gy)
-                okv = np.isfinite(rf) & (day > 0.5) & ~colored & ~use18
+                okv = np.isfinite(rf) & (day > 0.5) & ~colored & (~use18 if style == "v21" else True)   # V22: o visível do GOES-19 também no oeste
                 rn = np.nan_to_num(rf, nan=0.0) / np.clip(cz, 0.15, 1.0)
-                gray = 255.0 * np.clip(rn, 0, 1.0) ** 0.6
+                gray = vis_tone(rn, style)
                 a_vis = smoothstep((rn - 0.12) / 0.20)
                 a_vis *= 1.0 - smoothstep((tc - 22.0) / 10.0) * (rn < 0.55)   # salares/areia quentes não são nuvem
                 rgb = np.where(okv[..., None], gray[..., None].repeat(3, -1), rgb_ir)
