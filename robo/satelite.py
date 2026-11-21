@@ -26,7 +26,7 @@ WEST_CUT = -106.0                                       # a oeste disso usa o GO
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
 IR_BAND, VIS_BAND = "C13", "C02"
 # V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
-WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 56.0
+WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 72.0   # V17: Canadá inteiro (até 72°N)
 BASE_Z = 6
 # recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF
 D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
