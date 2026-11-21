@@ -40,7 +40,7 @@ LONG_HOURS = 12
 def keeper(stamp):
     return stamp[10:12] == "00"
 AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-18, num arquivo separado (limite de 25 MB do KV)
-VERSION = "hd10"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd11"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -364,7 +364,7 @@ class Grid:
         return out
 
 # ---------------------------------------------------------------- desenho
-STYLE = os.environ.get("SAT_STYLE", "v21")   # V22 pronto mas desligado até aprovar: "v22" = cores e contraste novos
+STYLE = os.environ.get("SAT_STYLE", "v22")   # V22: cores e contraste novos (ligado em 21/11; "v21" = antigo)
 def vis_tone(rn, style):
     """Brilho do visível (0..1 -> 0..255). V22: mais contraste (mar e chão mais escuros, nuvem mais branca)."""
     if style == "v21":
