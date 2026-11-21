@@ -619,7 +619,7 @@ def main():
 GLM_PRODUCT = "GLM-L2-LCFA"
 GLM_W, GLM_E, GLM_S, GLM_N = -135.0, -25.0, -57.0, 56.0   # V14: raios também nos EUA, América Central e sul do Canadá
 GLM_WINDOW = 60 * 60            # segundos de passado (V12: 1 hora, a aba Raios tem 15/30/60 min)
-GLM_EVERY = 6 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
+GLM_EVERY = 8 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
 _glm_cache = {}                 # arquivo -> lista de (lat, lon, ms)
 
 def glm_time(key):
