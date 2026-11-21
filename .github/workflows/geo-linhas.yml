@@ -1,0 +1,25 @@
+name: Linhas detalhadas (países e estados)
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  gerar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install requests shapely
+      - run: python robo/geo_linhas.py
+        env:
+          PYTHONUNBUFFERED: "1"
+      - run: |
+          git config user.name "StormWatch robô"
+          git config user.email "robo@users.noreply.github.com"
+          git pull -q --rebase
+          git add -A dados/linhas
+          git commit -qm "Linhas detalhadas (IBGE + Natural Earth 10m)" || echo "sem mudança"
+          git push
