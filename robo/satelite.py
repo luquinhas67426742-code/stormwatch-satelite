@@ -22,6 +22,7 @@ from scipy.ndimage import map_coordinates, gaussian_filter
 
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
 BUCKET18 = "https://noaa-goes18.s3.amazonaws.com"   # V16: GOES-18 (GOES-Oeste) para o oeste da América do Norte
+BLEND = 4.0                                             # V18: largura (graus) da emenda suave entre os dois satélites
 WEST_CUT = -106.0                                       # a oeste disso usa o GOES-18 (fica mais perto da vertical, sem esticar)
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
 IR_BAND, VIS_BAND = "C13", "C02"
@@ -34,7 +35,7 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd9"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd10"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -347,12 +348,12 @@ class Grid:
         self.c0, self.r0, self.step = c0 / step, r0 / step, step
         print(f"  janela {r1-r0}x{c1-c0} px (passo {step}) lida em {time.time()-t:.1f}s")
 
-    def sample(self, gx, gy):
+    def sample(self, gx, gy, order=0):
         cc = (gx - self.ofx) / self.sfx - self.c0
         rr = (gy - self.ofy) / self.sfy - self.r0
         bad = ~np.isfinite(cc) | ~np.isfinite(rr)
         cc = np.where(bad, -10, cc); rr = np.where(bad, -10, rr)
-        out = map_coordinates(self.coef, [rr, cc], order=0, prefilter=False, mode="nearest")
+        out = map_coordinates(self.coef, [rr, cc], order=order, prefilter=False, mode="nearest")
         ok = map_coordinates(self.valid, [rr, cc], order=0, mode="constant", cval=0.0) > 0.5
         out[bad | ~ok] = np.nan
         return out
@@ -370,14 +371,26 @@ def draw(z, box, p, ir, vis, when, west=None):
         lat = np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * rows / N))))
         LON, LAT = np.meshgrid(lon, lat)
         gx, gy = geos_xy(LAT, LON, p)
-        tc = ir.sample(gx, gy) - 273.15
+        # V18: no norte (Canadá) cada pixel do GOES fica enorme e esticado; o "pixel mais próximo"
+        # vira escadinha. Lá a temperatura é interpolada (bilinear) — as cores continuam as da paleta.
+        latw = smoothstep((np.abs(LAT) - 42.0) / 12.0)
+        def samp(g, x, y):
+            t = g.sample(x, y)
+            if latw.max() > 0:
+                tl = g.sample(x, y, order=1)
+                t = np.where(np.isfinite(tl) & np.isfinite(t), t * (1 - latw) + tl * latw, t)
+            return t - 273.15
+        tc = samp(ir, gx, gy)
         use18 = np.zeros(tc.shape, bool)
-        if west is not None and LON.min() < WEST_CUT:
+        if west is not None and LON.min() < WEST_CUT + BLEND:
             g18, p18 = west
             hx, hy = geos_xy(LAT, LON, p18)
-            t18 = g18.sample(hx, hy) - 273.15
-            use18 = (LON < WEST_CUT) & np.isfinite(t18)
-            tc = np.where(use18, t18, tc)
+            t18 = samp(g18, hx, hy)
+            # V18: emenda suave GOES-18 / GOES-19 (antes era um corte reto e aparecia uma "parede")
+            w18 = smoothstep((WEST_CUT + BLEND - LON) / (2 * BLEND))
+            f18, f19 = np.isfinite(t18), np.isfinite(tc)
+            tc = np.where(f18 & f19, w18 * t18 + (1 - w18) * tc, np.where(f18, t18, tc))
+            use18 = f18 & ((w18 > 0.5) | ~f19)
         okir = np.isfinite(tc); tc = np.nan_to_num(tc, nan=40.0)
         rgb_ir = ir_colors(tc)
         # Cores SEMPRE da paleta Weathernerds, nunca misturadas:
@@ -394,7 +407,7 @@ def draw(z, box, p, ir, vis, when, west=None):
             day = smoothstep((cz - 0.03) / 0.17)
             if np.any(day > 0):
                 rf = vis.sample(gx, gy)
-                okv = np.isfinite(rf) & (day > 0.5) & ~colored & ~use18 & (LON >= WEST_CUT)
+                okv = np.isfinite(rf) & (day > 0.5) & ~colored & ~use18
                 rn = np.nan_to_num(rf, nan=0.0) / np.clip(cz, 0.15, 1.0)
                 gray = 255.0 * np.clip(rn, 0, 1.0) ** 0.6
                 a_vis = smoothstep((rn - 0.12) / 0.20)
@@ -456,7 +469,7 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
     if ir18_key:
         try:
             f18 = open_remote(ir18_key, "/tmp/c13_18.nc"); p18 = proj_params(f18)
-            west = (Grid(f18, p18, WEST, WEST_CUT + 2, SOUTH, NORTH, smooth=0.0, fill=300.0), p18)
+            west = (Grid(f18, p18, WEST, WEST_CUT + BLEND + 2, SOUTH, NORTH, smooth=0.0, fill=300.0), p18)
             f18.close(); os.remove("/tmp/c13_18.nc")
         except Exception as e:
             print("  GOES-18 falhou, usando só o GOES-19:", e); west = None
