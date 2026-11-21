@@ -2,7 +2,7 @@
 StormWatch Atlas · robô do satélite HD + raios GLM
 
 Reprojeta dados de disco completo do GOES-19 e do GOES-18 para Web Mercator.
-Gera uma base das Américas (z6) e detalhes do Brasil e dos EUA contíguos (z8).
+Gera uma base das Américas (z6) e detalhes do Brasil, dos EUA contíguos e do sul do Canadá (z8).
 Usa o visível C02 (500 m no nadir) durante o dia e o infravermelho C13
 (2 km no nadir) à noite e nos topos frios. Publica quadros e índice no Cloudflare KV.
 Variáveis (segredos do GitHub): CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE
@@ -17,17 +17,18 @@ BUCKET18 = "https://noaa-goes18.s3.amazonaws.com"   # V16: GOES-18 (GOES-Oeste) 
 WEST_BLEND_W, WEST_BLEND_E = -112.0, -100.0
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
 IR_BAND, VIS_BAND = "C13", "C02"
-# V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
-WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 56.0
+# Engloba Yukon e o Atlântico canadense. O limite norte fica além do limbo do GOES,
+# para a cobertura real terminar pela máscara de visibilidade, sem linha horizontal.
+WEST, EAST, SOUTH, NORTH = -147.0, -25.0, -57.0, 82.0
 BASE_Z = 6
 # recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF
 D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
 DETAIL_Z = 8
-NORTH_DETAIL = (-129.0, -62.0, 23.0, 52.0)
+NORTH_DETAIL = (-132.0, -50.0, 23.0, 55.0)
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd9"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd10"                     # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -461,7 +462,12 @@ def publish_frame(stamp, z, box, projection, ir, vis, when, west=None, north=Fal
     started = time.time()
     image = draw(z, box, projection, ir, vis, when, west, edge_fade=96 if north else 0)
     with_lite = z == BASE_Z
-    quality_steps = ((False, 92), (False, 82), (False, 72)) if north else ((True, 95), (False, 95))
+    if north:
+        quality_steps = ((False, 92), (False, 82), (False, 72))
+    elif with_lite:
+        quality_steps = ((True, 95), (False, 95), (False, 86), (False, 76))
+    else:
+        quality_steps = ((True, 95), (False, 95))
     for lossless, quality in quality_steps:
         data = make_pack(image, quality, lossless=lossless, with_lite=with_lite)
         if len(data) < 24_000_000:
@@ -520,7 +526,7 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None, vis18_key=None):
         publish_frame(stamp, DETAIL_Z, north_box, projection, ir_base, vis_north, when, west, north=True)
         north_ready = True
     except Exception as error:
-        print("  Detalhe dos EUA indisponível neste quadro, usando a base:", error)
+        print("  Detalhe da América do Norte indisponível neste quadro, usando a base:", error)
     return north_ready
 
 def save_index(frames):
