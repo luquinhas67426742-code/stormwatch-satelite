@@ -34,3 +34,4 @@ for nome, (w, e, s, n) in {"canada": (-110, -70, 48, 66), "oeste": (-125, -90, 1
     out = Image.new("RGB", (a.width * 2 + 12, a.height), "white"); out.paste(a, (0, 0)); out.paste(c, (a.width + 12, 0))
     out.thumbnail((2000, 1400)); out.save(f"testes/sat_{nome}.jpg", quality=88)
 print("pronto")
+# rodada 2

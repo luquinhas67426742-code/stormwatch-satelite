@@ -371,12 +371,16 @@ def vis_tone(rn, style):
         return 255.0 * np.clip(rn, 0, 1.0) ** 0.6
     x = np.clip((rn - 0.03) / 0.92, 0, 1) ** 0.45
     return 255.0 * (0.6 * x + 0.4 * smoothstep(x))
-def cold_limit(lat, style):
+def cold_limit(lat, style, when=None):
     """V22: a partir de que temperatura a nuvem vira COLORIDA. Perto dos polos o próprio chão
     fica abaixo de -20 °C no inverno; lá só pinta de cor o que é bem mais frio que o chão."""
     if style == "v21":
         return np.full(lat.shape, -20.5)
-    return -20.5 - 24.0 * smoothstep((np.abs(lat) - 38.0) / 18.0)
+    # só no hemisfério que está no inverno (chão gelado); no verão nuvem fria a -25 °C é nuvem mesmo
+    m = (when or dt.datetime.utcnow()).month
+    north_winter = m in (10, 11, 12, 1, 2, 3, 4)
+    side = (lat > 0) if north_winter else (lat < 0)
+    return -20.5 - 24.0 * smoothstep((np.abs(lat) - 38.0) / 18.0) * side
 def draw(z, box, p, ir, vis, when, west=None, style=None):
     style = style or STYLE
     """Imagem RGBA Web Mercator (z, box). ir/vis = Grid (vis pode ser None à noite).
@@ -412,7 +416,7 @@ def draw(z, box, p, ir, vis, when, west=None, style=None):
             use18 = f18 & ((w18 > 0.5) | ~f19)
         okir = np.isfinite(tc); tc = np.nan_to_num(tc, nan=40.0)
         rgb_ir = ir_colors(tc)
-        lim = cold_limit(LAT, style)
+        lim = cold_limit(LAT, style, when)
         # Cores SEMPRE da paleta Weathernerds, nunca misturadas:
         #  - topos frios (-20 °C ou menos, parte colorida da paleta): cor exata e 100% opaca;
         #  - parte cinza da paleta (nuvem morna): transparência gradual até sumir no chão quente.
