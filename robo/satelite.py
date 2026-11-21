@@ -35,6 +35,10 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
+LONG_TTL = 13 * 3600                 # V21: 1 quadro por hora (os de hh:00) fica 12 h, pro período de 6 h e 12 h do site
+LONG_HOURS = 12
+def keeper(stamp):
+    return stamp[10:12] == "00"
 AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-18, num arquivo separado (limite de 25 MB do KV)
 VERSION = "hd10"                      # muda quando o desenho muda (força refazer as imagens)
 
@@ -503,7 +507,7 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
         print(f"  z{z}: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
             raise RuntimeError("Imagem grande demais para o KV.")
-        kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", TTL)
+        kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", LONG_TTL if (z == BASE_Z and keeper(stamp)) else TTL)
         out[z] = box_bounds(z, box)
     if ak is not None:   # V19: Alasca
         try:
@@ -518,7 +522,13 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
     return out
 
 def save_index(frames, bounds):
-    frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
+    frames = sorted({fr["stamp"]: fr for fr in frames}.values(), key=lambda fr: fr["time"])
+    recent = frames[-KEEP_FRAMES:]
+    if recent:
+        # V21: além das últimas 3 h (de 10 em 10 min), 1 quadro por hora até 12 h atrás, só a imagem base
+        lim = recent[0]["time"]; old_lim = recent[-1]["time"] - LONG_HOURS * 3600 * 1000
+        older = [dict(fr, detail=False, ak=False) for fr in frames[:-KEEP_FRAMES] if fr.get("long") and fr["time"] >= old_lim and fr["time"] < lim]
+        frames = older + recent
     index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
              "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]}, "pack": True,
              "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]},
@@ -569,7 +579,7 @@ def main():
             bounds = process(key, vis_key, stamp, when, k18)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak"))})
+        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak")), "long": keeper(stamp)})
         saved = False
         if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
             frames = save_index(frames, bounds); saved = True
