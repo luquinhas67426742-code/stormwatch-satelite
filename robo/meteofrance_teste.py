@@ -21,7 +21,9 @@ def show(raw, tag, only=None):
             if only and not any(o.lower() in m_.name.lower() for o in only): continue
             f = t.extractfile(m_)
             if not f: continue
-            b = f.read(); print("    ", m_.name, len(b), b[:12])
+            b = f.read()
+            if tag != "mosaique" and "IPSR" not in m_.name: continue
+            print("    ", m_.name, len(b), b[:12])
             if b[:2] == b"\x1f\x8b": b = gzip.decompress(b); print("       gunzip ->", len(b), b[:12])
             if b"BUFR" in b[:200] and "IPSR" in m_.name and not os.path.exists("/tmp/" + tag + ".bufr"):
                 open("/tmp/" + tag + ".bufr", "wb").write(b)
@@ -52,7 +54,7 @@ for l in ant[:3]:
 m = get("/mosaique/paquet")
 print("mosaique", m.status_code, len(m.content))
 if m.ok:
-    show(m.content, "mosaique", only=("ANT", "antil", "OUTRE", "DOM"))
+    show(m.content, "mosaique")
 
 for tag in ("90", "91"):
     fn = "/tmp/" + tag + ".bufr"
