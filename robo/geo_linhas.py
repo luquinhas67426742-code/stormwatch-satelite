@@ -29,12 +29,30 @@ def lines_of(g):
 
 def main():
     area = box(W, S, E, N)
-    br = get(IBGE)
-    ufs = [shape(f["geometry"]).buffer(0) for f in br["features"]]
-    BR = unary_union(ufs)
-    print("IBGE:", len(ufs), "estados")
-    br_lines = linemerge(unary_union([u.boundary for u in ufs]))   # cada divisa uma vez só
-    cut = BR.buffer(0.02)
+    # V1.69: malhas oficiais por país (cada uma corta o que já veio de um país anterior, sem linha dupla)
+    def gb(iso):
+        meta = get(f"https://www.geoboundaries.org/api/current/gbOpen/{iso}/ADM1/")
+        print(iso, "licença:", meta.get("boundaryLicense"), "| fonte:", meta.get("boundarySource"))
+        return get(meta["gjDownloadURL"])
+    sources = [("BRA", lambda: get(IBGE)), ("USA", lambda: gb("USA")), ("CAN", lambda: gb("CAN")), ("MEX", lambda: gb("MEX"))]
+    done = None; outer_all = []; inner_all = []
+    for iso, fetch in sources:
+        try:
+            j = fetch()
+            polys = [shape(f["geometry"]).buffer(0) for f in j["features"] if f.get("geometry")]
+            polys = [g.intersection(area) for g in polys if g.intersects(area)]
+        except Exception as e:
+            print(iso, "falhou:", e); continue
+        P = unary_union(polys)
+        lines = linemerge(lines_of(unary_union([g.boundary for g in polys])))   # cada divisa uma vez só
+        inner = P.buffer(-0.001, resolution=2)
+        outer = lines.difference(inner); inn = lines.intersection(inner)
+        if done is not None:
+            outer = outer.difference(done.buffer(0.01, resolution=2))   # fronteira já desenhada pelo país anterior
+        outer_all.append(outer); inner_all.append(inn)
+        done = P if done is None else unary_union([done, P])
+        print(iso, len(polys), "estados/províncias")
+    cut = done.buffer(0.02, resolution=2)
     def ne_lines(name, keep=lambda p: True):
         j = get(NE + name); out = []
         for f in j["features"]:
@@ -47,10 +65,9 @@ def main():
     coast = ne_lines("ne_10m_coastline.geojson")
     border = ne_lines("ne_10m_admin_0_boundary_lines_land.geojson")
     states = ne_lines("ne_10m_admin_1_states_provinces_lines.geojson",
-                      lambda p: p.get("adm0_a3") not in ("BRA", "GRL") and p.get("adm0_name") not in ("Brazil", "Greenland"))
-    inner = BR.buffer(-0.001, resolution=2)
-    country = unary_union([coast, border, br_lines.difference(inner)])   # Brasil: só o contorno de fora
-    state = unary_union([states, br_lines.intersection(inner)])
+                      lambda p: p.get("adm0_a3") not in ("BRA", "USA", "CAN", "MEX", "GRL"))
+    country = unary_union([coast, border] + outer_all)
+    state = unary_union([states] + inner_all)
     layers = {}
     for k, g in (("c", country), ("s", state)):
         ls = lines_of(linemerge(lines_of(g)))
@@ -91,7 +108,7 @@ def main():
                 n += 1; tot += os.path.getsize(fn); idx.append(f"{x}_{y}")
         json.dump(idx, open(f"{OUT}/{lv}/index.json", "w"))
         print(f"nível {lv}: {n} blocos, {tot // 1024} KB no total")
-    json.dump({"fonte": "IBGE (Brasil, malha territorial) e Natural Earth 1:10m (domínio público)"},
+    json.dump({"fonte": "IBGE (Brasil); geoBoundaries gbOpen (EUA: US Census, Canadá: Statistics Canada, México: INEGI); Natural Earth 1:10m (demais)"},
               open(OUT + "/fonte.json", "w"), ensure_ascii=False)
 
 if __name__ == "__main__":
