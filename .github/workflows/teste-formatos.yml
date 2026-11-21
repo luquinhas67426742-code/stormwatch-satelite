@@ -1,0 +1,19 @@
+name: Teste de formatos de imagem
+on:
+  workflow_dispatch: {}
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: robo/requirements.txt
+      - run: sudo apt-get install -y -q webp
+      - run: pip install -r robo/requirements.txt
+      - run: python robo/teste_formatos.py
+        env:
+          PYTHONUNBUFFERED: "1"
