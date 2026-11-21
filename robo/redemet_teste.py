@@ -1,7 +1,7 @@
 # Testa quais produtos de radar a API da REDEMET aceita. Nunca imprime a chave.
 import os, json, re, urllib.request, urllib.error, datetime
 KEY = os.environ.get('REDEMET_KEY', '').strip()
-out = {'quando': datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), 'chave_existe': bool(KEY), 'tipos': {}}
+out = {'quando': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), 'chave_existe': bool(KEY), 'tipos': {}}
 TIPOS = ['maxcappi','03km','05km','07km','10km','12km','15km','01km','02km','ppi','ppivr','ppiz','ppidbz','vr','vel','velocidade',
          'velocidade_radial','doppler','srv','cappi','echotop','vil','zdr','rhohv','kdp','hca','acumulado','chuva']
 def limpa(s):
@@ -37,4 +37,5 @@ if KEY:
     out['lista_sem_tipo'] = {'status': st, 'resposta': limpa(body)[:800]}
 else:
     print('Falta o segredo REDEMET_KEY no GitHub.')
+os.makedirs('testes', exist_ok=True)
 open('testes/redemet_teste.json', 'w').write(json.dumps(out, ensure_ascii=False, indent=1))
