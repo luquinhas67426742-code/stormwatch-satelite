@@ -13,6 +13,8 @@ jobs:
       - name: Testa os produtos
         env:
           REDEMET_KEY: ${{ secrets.REDEMET_KEY }}
+          REDEMET_KEY_2: ${{ secrets.REDEMET_KEY_2 }}
+          REDEMET_KEY_3: ${{ secrets.REDEMET_KEY_3 }}
         run: python3 robo/redemet_teste.py
       - name: Salva o resultado (sem a chave)
         run: |
