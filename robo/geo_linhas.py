@@ -39,7 +39,7 @@ def main():
         j = get(NE + name); out = []
         for f in j["features"]:
             p = {k.lower(): v for k, v in (f.get("properties") or {}).items()}
-            if not keep(p): continue
+            if not keep(p) or not f.get("geometry"): continue
             g = shape(f["geometry"])
             if not g.intersects(area): continue
             out += lines_of(g.intersection(area))
