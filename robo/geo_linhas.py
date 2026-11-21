@@ -31,9 +31,13 @@ def main():
     area = box(W, S, E, N)
     # V1.69: malhas oficiais por país (cada uma corta o que já veio de um país anterior, sem linha dupla)
     def gb(iso):
-        meta = get(f"https://www.geoboundaries.org/api/current/gbOpen/{iso}/ADM1/")
-        print(iso, "licença:", meta.get("boundaryLicense"), "| fonte:", meta.get("boundarySource"))
-        return get(meta["gjDownloadURL"])
+        base = f"https://media.githubusercontent.com/media/wmgeolab/geoBoundaries/main/releaseData/gbOpen/{iso}/ADM1/geoBoundaries-{iso}-ADM1"
+        try:
+            meta = get(base + "-metaData.json")
+            print(iso, "licença:", meta.get("boundaryLicense"), "| fonte:", meta.get("boundarySource"))
+        except Exception as e:
+            print(iso, "sem metadados:", e)
+        return get(base + ".geojson")
     sources = [("BRA", lambda: get(IBGE)), ("USA", lambda: gb("USA")), ("CAN", lambda: gb("CAN")), ("MEX", lambda: gb("MEX"))]
     done = None; outer_all = []; inner_all = []
     for iso, fetch in sources:
