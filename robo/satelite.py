@@ -509,7 +509,7 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
         try:
             t = time.time(); box = pixel_box(BASE_Z, AK_W, AK_E, AK_S, AK_N)
             im = draw(BASE_Z, box, ak[1], ak[0], None, when, None)
-            data = make_pack(im, 84, lossless=True)
+            data = make_pack(im, 84, lossless=True, with_lite=True)   # com imagem leve (zoom de longe)
             kv_put(f"frame-{stamp}-z{BASE_Z}-ak{VERSION}.pack", data, "application/octet-stream", TTL)
             out["ak"] = True
             print(f"  Alasca: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
