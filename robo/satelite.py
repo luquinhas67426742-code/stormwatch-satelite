@@ -1,34 +1,40 @@
 """
-StormWatch Atlas · robô do satélite HD + raios GLM
-
-Reprojeta dados de disco completo do GOES-19 e do GOES-18 para Web Mercator.
-Gera uma base das Américas (z6) e detalhes do Brasil, dos EUA contíguos e do sul do Canadá (z8).
-Usa o visível C02 (500 m no nadir) durante o dia e o infravermelho C13
-(2 km no nadir) à noite e nos topos frios. Publica quadros e índice no Cloudflare KV.
+StormWatch Atlas · robô do satélite HD + raios GLM (versão 11)
+-------------------------------------------------
+A cada 10 minutos (GitHub Actions):
+ 1. acha os arquivos mais novos do GOES-19 (disco completo, bucket público da NOAA na Amazon):
+      C13 = infravermelho 10,3 µm (2 km)  -> dia e noite
+      C02 = visível 0,64 µm (500 m)       -> só de dia
+ 2. lê SÓ o pedaço da América do Sul (não usa o disco inteiro);
+ 3. reprojeta para o mapa (Web Mercator, EPSG:3857) com interpolação BICÚBICA:
+      - imagem da América do Sul inteira em z6 (~2 km por pixel)
+      - imagem de DETALHE do Sul/Sudeste/Centro-Oeste em z8 (~500 m por pixel, ~3700x4400 px)
+ 4. de dia: visível (C02) em tons de cinza + infravermelho colorido por cima só nos topos frios
+    (tempestades); à noite: só o infravermelho, suavizado. A transição no terminador é gradual;
+ 5. o fundo sem nuvem (solo quente / céu limpo) fica 100% transparente, com borda suave nas nuvens;
+ 6. salva as imagens WebP + index.json no Cloudflare KV, que o site lê.
 Variáveis (segredos do GitHub): CF_API_TOKEN, CF_ACCOUNT_ID, CF_KV_NAMESPACE
 """
-import io, json, math, os, re, sys, tempfile, time, datetime as dt
+import io, json, math, os, re, sys, time, datetime as dt
 import numpy as np, requests
 from PIL import Image
 from scipy.ndimage import map_coordinates, gaussian_filter
 
 BUCKET = "https://noaa-goes19.s3.amazonaws.com"
 BUCKET18 = "https://noaa-goes18.s3.amazonaws.com"   # V16: GOES-18 (GOES-Oeste) para o oeste da América do Norte
-WEST_BLEND_W, WEST_BLEND_E = -112.0, -100.0
+WEST_CUT = -106.0                                       # a oeste disso usa o GOES-18 (fica mais perto da vertical, sem esticar)
 PRODUCT = "ABI-L2-CMIPF"            # Cloud and Moisture Imagery, disco completo (a cada 10 min)
 IR_BAND, VIS_BAND = "C13", "C02"
-# Engloba Yukon e o Atlântico canadense. O limite norte fica além do limbo do GOES,
-# para a cobertura real terminar pela máscara de visibilidade, sem linha horizontal.
-WEST, EAST, SOUTH, NORTH = -147.0, -25.0, -57.0, 82.0
+# V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
+WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 56.0
 BASE_Z = 6
 # recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF
 D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
 DETAIL_Z = 8
-NORTH_DETAIL = (-132.0, -50.0, 23.0, 55.0)
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
-VERSION = "hd10"                     # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd8"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -79,19 +85,14 @@ def list_keys(band, hours=4, sat="G19"):
         keys += re.findall(r"<Key>([^<]+\.nc)</Key>", r.text)
     return sorted(set(keys), reverse=True)
 
+def scan_start(key):
+    return re.search(r"_s(\d{13,14})", key).group(1)[:13]
+
 def stamp_of(key):
     m = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})", key)
     y, j, H, M, S = map(int, m.groups())
     t = dt.datetime(y, 1, 1, H, M, S) + dt.timedelta(days=j - 1)
     return t.strftime("%Y%m%d%H%M%S"), int(t.replace(tzinfo=dt.timezone.utc).timestamp() * 1000), t
-
-def nearby_scan(key, scans, tolerance_seconds):
-    if not scans:
-        return None
-    timestamp = stamp_of(key)[1]
-    distance = lambda scan: abs(stamp_of(scan)[1] - timestamp)
-    closest = min(scans, key=distance)
-    return closest if distance(closest) <= tolerance_seconds * 1000 else None
 
 # Paleta "Weathernerds" (esquema IR colorido do weathernerds.org), lida da barra de cores deles.
 IR_STOPS = [(49.1, (6, 6, 6)),
@@ -311,16 +312,14 @@ def geos_xy(lat, lon, p):
     sx = H - rc * np.cos(phic) * np.cos(lam)
     sy = -rc * np.cos(phic) * np.sin(lam)
     sz = rc * np.sin(phic)
-    # A normal ao elipsoide precisa apontar para o satélite. O plano tangente
-    # define o limbo e impede que a projeção dobre pontos do lado oculto.
-    vis = H * (H - sx) >= req ** 2
+    vis = H * (H - sx) >= sy ** 2 + (req ** 2 / rpol ** 2) * sz ** 2
     x = np.arcsin(-sy / np.sqrt(sx ** 2 + sy ** 2 + sz ** 2))
     y = np.arctan(sz / sx)
     x[~vis] = np.nan; y[~vis] = np.nan
     return x, y
 
 class Grid:
-    """Janela de um canal do GOES com amostragem por vizinho mais próximo."""
+    """Pedaço recortado de um canal do GOES + amostrador bicúbico."""
     def __init__(self, f, p, w, e, s, n, pad=1.0, step=1, smooth=0.0, fill=0.0):
         xs = f["x"]; ys = f["y"]
         sfx = float(np.ravel(xs.attrs["scale_factor"])[0]); ofx = float(np.ravel(xs.attrs["add_offset"])[0])
@@ -337,7 +336,7 @@ class Grid:
             h, w_ = (data.shape[0] // step) * step, (data.shape[1] // step) * step
             data = np.nanmean(data[:h, :w_].reshape(h // step, step, w_ // step, step), axis=(1, 3))
         valid = np.isfinite(data)
-        data = np.where(valid, data, fill).astype(np.float32, copy=False)
+        data = np.where(valid, data, fill).astype(np.float64)
         if smooth > 0:
             data = gaussian_filter(data, smooth)
         # V10: PIXEL REAL — sem spline/suavização, cada ponto pega o pixel do satélite mais próximo
@@ -359,57 +358,54 @@ class Grid:
         return out
 
 # ---------------------------------------------------------------- desenho
-def merge_observations(east, west, weight):
-    """Combina as observações na sobreposição e mantém o lado válido nas bordas."""
-    west = np.where(weight > 0, west, np.nan)
-    both = np.isfinite(east) & np.isfinite(west)
-    return np.where(both, east + (west - east) * weight, np.where(np.isfinite(west), west, east))
-
-def draw(z, box, p, ir, vis, when, west=None, edge_fade=0):
-    """Imagem RGBA Web Mercator, com GOES-Oeste opcional e borda suave no detalhe."""
+def draw(z, box, p, ir, vis, when, west=None):
+    """Imagem RGBA Web Mercator (z, box). ir/vis = Grid (vis pode ser None à noite).
+    west = (Grid do GOES-18, parâmetros) para a parte a oeste de WEST_CUT (V16)."""
     x0, y0, x1, y1 = box
     W, Hh = x1 - x0, y1 - y0; N = 256 * 2 ** z
-    rgba = np.empty((Hh, W, 4), np.uint8)
+    rgba = np.zeros((Hh, W, 4), np.float32)
     lon = (np.arange(x0, x1) + 0.5) / N * 360 - 180
-    if edge_fade:
-        cols = np.arange(W) + 0.5
-        x_alpha = smoothstep(np.minimum(cols, W - cols) / edge_fade)
     for r0 in range(0, Hh, 512):
         rows = np.arange(y0 + r0, min(y1, y0 + r0 + 512)) + 0.5
         lat = np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * rows / N))))
         LON, LAT = np.meshgrid(lon, lat)
         gx, gy = geos_xy(LAT, LON, p)
         tc = ir.sample(gx, gy) - 273.15
-        west_coords = None
-        if west is not None and lon.min() < WEST_BLEND_E:
-            ir18, vis18, p18 = west
+        use18 = np.zeros(tc.shape, bool)
+        if west is not None and LON.min() < WEST_CUT:
+            g18, p18 = west
             hx, hy = geos_xy(LAT, LON, p18)
-            blend = smoothstep((WEST_BLEND_E - LON) / (WEST_BLEND_E - WEST_BLEND_W))
-            tc = merge_observations(tc, ir18.sample(hx, hy) - 273.15, blend)
-            west_coords = hx, hy, blend
+            t18 = g18.sample(hx, hy) - 273.15
+            use18 = (LON < WEST_CUT) & np.isfinite(t18)
+            tc = np.where(use18, t18, tc)
         okir = np.isfinite(tc); tc = np.nan_to_num(tc, nan=40.0)
         rgb_ir = ir_colors(tc)
+        # Cores SEMPRE da paleta Weathernerds, nunca misturadas:
+        #  - topos frios (-20 °C ou menos, parte colorida da paleta): cor exata e 100% opaca;
+        #  - parte cinza da paleta (nuvem morna): transparência gradual até sumir no chão quente.
         colored = tc <= -20.5
-        rgb = rgb_ir
-        if vis is not None or (west_coords is not None and vis18 is not None):
+        # chão/céu limpo (+15 °C ou mais) some; nuvem a partir de +5 °C já fica opaca (cinza firme, sem desbotar)
+        a_ir = np.where(colored, 1.0, smoothstep((15.0 - tc) / 10.0))
+        rgb, a = rgb_ir, a_ir
+        if vis is not None:
+            # De dia o visível só entra na parte CINZA (dá a textura fina de 500 m das nuvens
+            # baixas); a parte colorida continua sendo a cor exata do infravermelho.
             cz = cos_zenith(LAT, LON, when)
             day = smoothstep((cz - 0.03) / 0.17)
             if np.any(day > 0):
-                rf = vis.sample(gx, gy) if vis is not None else np.full(tc.shape, np.nan)
-                if west_coords is not None and vis18 is not None:
-                    hx, hy, blend = west_coords
-                    rf = merge_observations(rf, vis18.sample(hx, hy), blend)
-                mix = np.where(np.isfinite(rf) & ~colored, day, 0.0)[..., None]
+                rf = vis.sample(gx, gy)
+                okv = np.isfinite(rf) & (day > 0.5) & ~colored & ~use18 & (LON >= WEST_CUT)
                 rn = np.nan_to_num(rf, nan=0.0) / np.clip(cz, 0.15, 1.0)
-                gray = (255.0 * np.clip(rn, 0, 1.0) ** 0.6)[..., None]
-                rgb = rgb_ir + (gray - rgb_ir) * mix
-        alpha = okir.astype(np.float32)
-        if edge_fade:
-            ys = rows - y0
-            alpha *= smoothstep(np.minimum(ys, Hh - ys) / edge_fade)[:, None] * x_alpha
-        rgba[r0:r0 + len(rows), :, :3] = np.clip(rgb + 0.5, 0, 255)
-        rgba[r0:r0 + len(rows), :, 3] = alpha * 255 + 0.5
-    return Image.fromarray(rgba)
+                gray = 255.0 * np.clip(rn, 0, 1.0) ** 0.6
+                a_vis = smoothstep((rn - 0.12) / 0.20)
+                a_vis *= 1.0 - smoothstep((tc - 22.0) / 10.0) * (rn < 0.55)   # salares/areia quentes não são nuvem
+                rgb = np.where(okv[..., None], gray[..., None].repeat(3, -1), rgb_ir)
+                a = np.where(okv, np.maximum(a_vis, a_ir * 0.6), a_ir)
+        # V6: fundo OPACO de novo (chão e céu limpo aparecem como no satélite, sem ver o mapa por baixo)
+        a = np.where(okir, 1.0, 0.0)
+        rgba[r0:r0 + len(rows), :, :3] = rgb
+        rgba[r0:r0 + len(rows), :, 3] = a * 255.0
+    return Image.fromarray(np.clip(rgba + 0.5, 0, 255).astype(np.uint8), "RGBA")
 
 def webp(img, q, lossless=True):
     """Base (2 km): WebP SEM perda, para as cores da paleta saírem exatas.
@@ -454,90 +450,50 @@ def is_daylight(when):
     lat, lon = np.meshgrid(np.linspace(SOUTH, NORTH, 30), np.linspace(WEST, EAST, 30))
     return bool(np.any(cos_zenith(lat, lon, when) > 0.02))
 
-def region_bounds(z, box):
-    south, west, north, east = box_bounds(z, box)
-    return west, east, south, north
+def process(ir_key, vis_key, stamp, when, ir18_key=None):
+    print("Processando", stamp, "(dia)" if vis_key else "(noite)", "+ GOES-18" if ir18_key else "")
+    west = None
+    if ir18_key:
+        try:
+            f18 = open_remote(ir18_key, "/tmp/c13_18.nc"); p18 = proj_params(f18)
+            west = (Grid(f18, p18, WEST, WEST_CUT + 2, SOUTH, NORTH, smooth=0.0, fill=300.0), p18)
+            f18.close(); os.remove("/tmp/c13_18.nc")
+        except Exception as e:
+            print("  GOES-18 falhou, usando só o GOES-19:", e); west = None
+    fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
+    ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
+    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0)  # sem desfoque: mantém o contraste
+    fi.close()
+    vis_base = vis_det = None
+    if vis_key:
+        try:
+            fv = open_remote(vis_key, "/tmp/c02.nc")
+            vis_base = Grid(fv, p, WEST, EAST, SOUTH, NORTH, step=4, fill=0.0)    # 500 m -> 2 km (média)
+            vis_det = Grid(fv, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, step=1, fill=0.0)  # 500 m nativo
+            fv.close(); os.remove("/tmp/c02.nc")
+        except Exception as e:
+            print("  visível falhou, usando só infravermelho:", e)
+    out = {}
+    for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
+                                         (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
+        t = time.time(); box = pixel_box(z, w, e, s, n)
+        im = draw(z, box, p, irg, visg, when, west if z == BASE_Z else None)
+        data = make_pack(im, q, lossless=True, with_lite=(z == BASE_Z))   # V10: sem perda = pixel exato
+        if len(data) > 23e6:
+            print("  pacote sem perda grande demais; usando qualidade 95 no detalhe")
+            data = make_pack(im, 95, lossless=False, with_lite=(z == BASE_Z))   # V15: base das Américas pode ficar grande
+        print(f"  z{z}: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
+        if len(data) > 24e6:
+            raise RuntimeError("Imagem grande demais para o KV.")
+        kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", TTL)
+        out[z] = box_bounds(z, box)
+    return out
 
-def publish_frame(stamp, z, box, projection, ir, vis, when, west=None, north=False):
-    started = time.time()
-    image = draw(z, box, projection, ir, vis, when, west, edge_fade=96 if north else 0)
-    with_lite = z == BASE_Z
-    if north:
-        quality_steps = ((False, 92), (False, 82), (False, 72))
-    elif with_lite:
-        quality_steps = ((True, 95), (False, 95), (False, 86), (False, 76))
-    else:
-        quality_steps = ((True, 95), (False, 95))
-    for lossless, quality in quality_steps:
-        data = make_pack(image, quality, lossless=lossless, with_lite=with_lite)
-        if len(data) < 24_000_000:
-            break
-    else:
-        raise RuntimeError("Imagem grande demais para o KV.")
-    version = VERSION + ("na" if north else "")
-    print(f"  z{z} {version}: {image.width}x{image.height} px, {len(data)/1e6:.1f} MB em {time.time()-started:.1f}s")
-    kv_put(f"frame-{stamp}-z{z}-{version}.pack", data, "application/octet-stream", TTL)
-
-def visible_grids(key, name, *regions):
-    if not key:
-        return (None,) * len(regions)
-    try:
-        with tempfile.TemporaryDirectory() as folder:
-            with open_remote(key, os.path.join(folder, "visible.nc")) as source:
-                projection = proj_params(source)
-                return tuple(Grid(source, projection, *bounds, step=step) for bounds, step in regions)
-    except Exception as error:
-        print(f"  Visível {name} indisponível:", error)
-        return (None,) * len(regions)
-
-def process(ir_key, vis_key, stamp, when, ir18_key=None, vis18_key=None):
-    print("Processando", stamp, "(dia)" if vis_key or vis18_key else "(noite)", "+ GOES-18" if ir18_key else "")
-    base_box = pixel_box(BASE_Z, WEST, EAST, SOUTH, NORTH)
-    south_box = pixel_box(DETAIL_Z, D_WEST, D_EAST, D_SOUTH, D_NORTH)
-    north_box = pixel_box(DETAIL_Z, *NORTH_DETAIL)
-    base_region = region_bounds(BASE_Z, base_box)
-    south_region = region_bounds(DETAIL_Z, south_box)
-    north_region = region_bounds(DETAIL_Z, north_box)
-    vis_base, vis_det, vis_north = visible_grids(vis_key, "GOES-19",
-                                               (base_region, 4), (south_region, 1), (north_region, 1))
-
-    with tempfile.TemporaryDirectory() as folder:
-        with open_remote(ir_key, os.path.join(folder, "east.nc")) as source:
-            projection = proj_params(source)
-            ir_base = Grid(source, projection, *base_region, fill=300.0)
-            ir_det = Grid(source, projection, *south_region, fill=300.0)
-        west = None
-        if ir18_key:
-            try:
-                west_region = (base_region[0], WEST_BLEND_E, base_region[2], base_region[3])
-                with open_remote(ir18_key, os.path.join(folder, "west.nc")) as source:
-                    p18 = proj_params(source)
-                    ir18 = Grid(source, p18, *west_region, fill=300.0)
-                west_vis_region = (base_region[0], WEST_BLEND_E, north_region[2] - 8, base_region[3])
-                (vis18,) = visible_grids(vis18_key, "GOES-18", (west_vis_region, 1))
-                west = ir18, vis18, p18
-            except Exception as error:
-                print("  GOES-18 indisponível, usando GOES-19:", error)
-
-    publish_frame(stamp, BASE_Z, base_box, projection, ir_base, vis_base, when, west)
-    publish_frame(stamp, DETAIL_Z, south_box, projection, ir_det, vis_det, when)
-    north_ready = False
-    try:
-        publish_frame(stamp, DETAIL_Z, north_box, projection, ir_base, vis_north, when, west, north=True)
-        north_ready = True
-    except Exception as error:
-        print("  Detalhe da América do Norte indisponível neste quadro, usando a base:", error)
-    return north_ready
-
-def save_index(frames):
+def save_index(frames, bounds):
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
-    base_bounds = box_bounds(BASE_Z, pixel_box(BASE_Z, WEST, EAST, SOUTH, NORTH))
-    south_bounds = box_bounds(DETAIL_Z, pixel_box(DETAIL_Z, D_WEST, D_EAST, D_SOUTH, D_NORTH))
-    north_bounds = box_bounds(DETAIL_Z, pixel_box(DETAIL_Z, *NORTH_DETAIL))
-    index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION,
-             "satellite": "GOES-19/18", "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": base_bounds}, "pack": True,
-             "detail": {"z": DETAIL_Z, "bounds": south_bounds},
-             "northDetail": {"z": DETAIL_Z, "bounds": north_bounds, "ver": VERSION + "na"}, "frames": frames}
+    index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
+             "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]}, "pack": True,
+             "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     return frames
 
@@ -545,6 +501,18 @@ def main():
     ir_keys = list_keys(IR_BAND)[:KEEP_FRAMES]
     if not ir_keys:
         raise SystemExit("Nenhum arquivo GOES-19 encontrado nas últimas horas.")
+    vis_by_start = {}
+    try:
+        for k in list_keys(VIS_BAND):
+            vis_by_start[scan_start(k)] = k
+    except Exception as e:
+        print("Lista do visível falhou:", e)
+    g18_by_start = {}
+    try:
+        for k in list_keys(IR_BAND, sat="G18"):
+            g18_by_start[scan_start(k)] = k
+    except Exception as e:
+        print("Lista do GOES-18 falhou:", e)
     index = kv_get_json("index.json") or {"frames": []}
     if index.get("ver") != VERSION:
         index = {"frames": []}  # mudou o desenho: começa uma animação nova
@@ -553,34 +521,23 @@ def main():
     todo = [t for t in todo if t[1] not in have][:MAX_PER_RUN]
     if not todo:
         print("Todos os quadros já estão no site. Nada a fazer."); return
-    optional_scans = {}
-    for sat, band in (("G19", VIS_BAND), ("G18", IR_BAND), ("G18", VIS_BAND)):
-        try:
-            optional_scans[sat, band] = list_keys(band, sat=sat)
-        except Exception as error:
-            print(f"  Lista {sat} {band} indisponível:", error)
-            optional_scans[sat, band] = []
     print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
-    frames = list(index["frames"])
-    unsaved = 0
-    for key, stamp, ms, when in todo:
-        day = is_daylight(when)
-        vis_key = nearby_scan(key, optional_scans["G19", VIS_BAND], 60) if day else None
-        k18 = nearby_scan(key, optional_scans["G18", IR_BAND], 150)
-        vis18_key = nearby_scan(k18, optional_scans["G18", VIS_BAND], 60) if day and k18 else None
+    frames = list(index["frames"]); bounds = None; saved = False
+    for i, (key, stamp, ms, when) in enumerate(todo):
+        vis_key = vis_by_start.get(scan_start(key)) if is_daylight(when) else None
         try:
-            north_ready = process(key, vis_key, stamp, when, k18, vis18_key)
+            st = scan_start(key)
+            k18 = g18_by_start.get(st) or next((v for s_, v in g18_by_start.items() if s_[:11] == st[:11]), None)   # mesmo minuto
+            bounds = process(key, vis_key, stamp, when, k18)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "northDetail": north_ready,
-                       "day": bool(vis_key or vis18_key), "pack": True})
-        unsaved += 1
-        if len(frames) == 1 or unsaved == 3:
-            frames = save_index(frames)
-            unsaved = 0
-    if unsaved:
-        frames = save_index(frames)
-    print("Pronto:", len(frames), "quadros no site.")
+        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True})
+        saved = False
+        if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
+            frames = save_index(frames, bounds); saved = True
+    if bounds and not saved:
+        frames = save_index(frames, bounds)
+    print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
 
 # ---------------------------------------------------------------- RAIOS (GLM do GOES-19)
