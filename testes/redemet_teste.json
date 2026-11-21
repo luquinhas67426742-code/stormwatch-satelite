@@ -1,5 +1,9 @@
 {
- "quando": "2026-11-21 16:19 UTC",
- "chave_existe": false,
- "tipos": {}
+ "quando": "2026-11-21 16:22 UTC",
+ "chaves": {
+  "REDEMET_KEY": false,
+  "REDEMET_KEY_2": false,
+  "REDEMET_KEY_3": false
+ },
+ "por_chave": {}
 }
