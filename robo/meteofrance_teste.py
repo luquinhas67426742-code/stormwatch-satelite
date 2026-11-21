@@ -12,6 +12,27 @@ def get(path, **params):
         if r.status_code not in (401, 403):
             return r
     return r
+import tarfile, gzip
+def show(raw, tag, only=None):
+    try:
+        t = tarfile.open(fileobj=io.BytesIO(raw), mode="r:*")
+        mem = t.getmembers(); print("   tar com", len(mem), "arquivos")
+        for m_ in mem:
+            if only and not any(o.lower() in m_.name.lower() for o in only): continue
+            f = t.extractfile(m_)
+            if not f: continue
+            b = f.read(); print("    ", m_.name, len(b), b[:12])
+            if b[:2] == b"\x1f\x8b": b = gzip.decompress(b); print("       gunzip ->", len(b), b[:12])
+            if b"BUFR" in b[:200] and "IPSR" in m_.name and not os.path.exists("/tmp/" + tag + ".bufr"):
+                open("/tmp/" + tag + ".bufr", "wb").write(b)
+            if b[:4] == b"\x89HDF" and not os.path.exists("/tmp/" + tag + ".h5"):
+                open("/tmp/" + tag + ".h5", "wb").write(b)
+    except Exception as e:
+        print("   não é tar:", e)
+        try:
+            b = gzip.decompress(raw); print("   gzip simples ->", len(b), b[:40])
+        except Exception as e2:
+            print("   nem gzip:", e2)
 r = get("/liste-stations")
 if not r.ok:
     sys.exit("Chave recusada ou API não assinada: " + r.text[:300])
@@ -27,18 +48,29 @@ for l in ant[:3]:
     p = get("/station/paquet", id_station=sid)
     print("station", sid, p.status_code, len(p.content), "bytes")
     if p.ok:
-        try:
-            z = zipfile.ZipFile(io.BytesIO(p.content))
-            for n in z.namelist()[:30]:
-                b = z.read(n); print("    ", n, len(b), b[:8])
-        except Exception as e:
-            print("    não é zip:", e, p.content[:40])
+        show(p.content, sid)
 m = get("/mosaique/paquet")
 print("mosaique", m.status_code, len(m.content))
 if m.ok:
+    show(m.content, "mosaique", only=("ANT", "antil", "OUTRE", "DOM"))
+
+for tag in ("90", "91"):
+    fn = "/tmp/" + tag + ".bufr"
+    if not os.path.exists(fn): print("sem BUFR de", tag); continue
     try:
-        z = zipfile.ZipFile(io.BytesIO(m.content))
-        for n in z.namelist()[:60]:
-            b = z.read(n); print("    ", n, len(b), b[:8])
+        import eccodes as ec
+        with open(fn, "rb") as f:
+            h = ec.codes_bufr_new_from_file(f)
+            ec.codes_set(h, "unpack", 1)
+            it = ec.codes_bufr_keys_iterator_new(h); keys = []
+            while ec.codes_bufr_keys_iterator_next(it):
+                keys.append(ec.codes_bufr_keys_iterator_get_name(it))
+            print(tag, "chaves BUFR:", len(keys), keys[:60])
+            for k in ("latitude", "longitude", "numberOfRows", "numberOfColumns", "xIncrement", "yIncrement", "typicalDate", "typicalTime", "horizontalReflectivity", "pixelValue"):
+                try:
+                    v = ec.codes_get_array(h, k) if k in ("horizontalReflectivity", "pixelValue") else ec.codes_get(h, k)
+                    print("   ", k, (len(v), v[:10]) if hasattr(v, "__len__") and not isinstance(v, str) else v)
+                except Exception as e:
+                    print("   ", k, "erro", str(e)[:60])
     except Exception as e:
-        print("    não é zip:", e)
+        print(tag, "eccodes falhou:", e)
