@@ -530,6 +530,14 @@ def main():
     ir_keys = list_keys(IR_BAND)[:KEEP_FRAMES]
     if not ir_keys:
         raise SystemExit("Nenhum arquivo GOES-19 encontrado nas últimas horas.")
+    index = kv_get_json("index.json") or {"frames": []}
+    if index.get("ver") != VERSION:
+        index = {"frames": []}  # mudou o desenho: começa uma animação nova
+    have = {fr["stamp"] for fr in index["frames"]}
+    todo = [(k, *stamp_of(k)) for k in ir_keys]
+    todo = [t for t in todo if t[1] not in have][:MAX_PER_RUN]
+    if not todo:
+        print("Todos os quadros já estão no site. Nada a fazer."); return
     vis_by_start = {}
     try:
         for k in list_keys(VIS_BAND):
@@ -542,14 +550,6 @@ def main():
             g18_by_start[scan_start(k)] = k
     except Exception as e:
         print("Lista do GOES-18 falhou:", e)
-    index = kv_get_json("index.json") or {"frames": []}
-    if index.get("ver") != VERSION:
-        index = {"frames": []}  # mudou o desenho: começa uma animação nova
-    have = {fr["stamp"] for fr in index["frames"]}
-    todo = [(k, *stamp_of(k)) for k in ir_keys]
-    todo = [t for t in todo if t[1] not in have][:MAX_PER_RUN]
-    if not todo:
-        print("Todos os quadros já estão no site. Nada a fazer."); return
     print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
     frames = list(index["frames"]); bounds = None; saved = False
     for i, (key, stamp, ms, when) in enumerate(todo):
@@ -566,6 +566,8 @@ def main():
             frames = save_index(frames, bounds); saved = True
     if bounds and not saved:
         frames = save_index(frames, bounds)
+    if not frames:
+        raise RuntimeError("Nenhum quadro do satélite pôde ser processado.")
     print("Pronto:", len(frames), "quadros no site (", frames[0]["stamp"], "→", frames[-1]["stamp"], ")")
 
 
