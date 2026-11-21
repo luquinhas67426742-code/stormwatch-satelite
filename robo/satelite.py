@@ -533,17 +533,26 @@ def main():
     index = kv_get_json("index.json") or {"frames": []}
     if index.get("ver") != VERSION:
         index = {"frames": []}  # mudou o desenho: começa uma animação nova
-    have = {fr["stamp"] for fr in index["frames"]}
+    vis_by_start = {}
+    try:
+        for k in list_keys(VIS_BAND):
+            vis_by_start[scan_start(k)[:11]] = k   # V20: casa pelo MINUTO (o visível às vezes começa 1 s antes/depois)
+    except Exception as e:
+        print("Lista do visível falhou:", e)
+    # V20: quadros de DIA que ficaram sem o visível (bug do segundo) são refeitos, senão o fundo pisca na animação
+    redo = set()
+    for fr in index["frames"]:
+        if not fr.get("day") and is_daylight(dt.datetime.fromtimestamp(fr["time"] / 1000, dt.timezone.utc).replace(tzinfo=None)):
+            k = next((ik for ik in ir_keys if stamp_of(ik)[0] == fr["stamp"]), None)
+            if k and scan_start(k)[:11] in vis_by_start:
+                redo.add(fr["stamp"])
+    if redo:
+        print("Refazendo", len(redo), "quadro(s) de dia que ficaram sem o visível")
+    have = {fr["stamp"] for fr in index["frames"]} - redo
     todo = [(k, *stamp_of(k)) for k in ir_keys]
     todo = [t for t in todo if t[1] not in have][:MAX_PER_RUN]
     if not todo:
         print("Todos os quadros já estão no site. Nada a fazer."); return
-    vis_by_start = {}
-    try:
-        for k in list_keys(VIS_BAND):
-            vis_by_start[scan_start(k)] = k
-    except Exception as e:
-        print("Lista do visível falhou:", e)
     g18_by_start = {}
     try:
         for k in list_keys(IR_BAND, sat="G18"):
@@ -551,9 +560,9 @@ def main():
     except Exception as e:
         print("Lista do GOES-18 falhou:", e)
     print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
-    frames = list(index["frames"]); bounds = None; saved = False
+    frames = [fr for fr in index["frames"] if fr["stamp"] not in redo]; bounds = None; saved = False
     for i, (key, stamp, ms, when) in enumerate(todo):
-        vis_key = vis_by_start.get(scan_start(key)) if is_daylight(when) else None
+        vis_key = vis_by_start.get(scan_start(key)[:11]) if is_daylight(when) else None
         try:
             st = scan_start(key)
             k18 = g18_by_start.get(st) or next((v for s_, v in g18_by_start.items() if s_[:11] == st[:11]), None)   # mesmo minuto
