@@ -1,9 +1,346 @@
 {
- "quando": "2026-11-21 16:22 UTC",
+ "quando": "2026-11-21 16:23 UTC",
  "chaves": {
-  "REDEMET_KEY": false,
+  "REDEMET_KEY": true,
   "REDEMET_KEY_2": false,
   "REDEMET_KEY_3": false
  },
- "por_chave": {}
+ "por_chave": {
+  "REDEMET_KEY": {
+   "tipos": {
+    "maxcappi": {
+     "status": 200,
+     "status_api": true,
+     "mensagem": "200",
+     "quadros": 29,
+     "radares": [
+      "al",
+      "be",
+      "bv",
+      "ch",
+      "cn",
+      "cz",
+      "ga",
+      "jr",
+      "mi",
+      "mn",
+      "mo",
+      "mq",
+      "nt",
+      "pc",
+      "pl",
+      "pv",
+      "rb",
+      "sf",
+      "sg",
+      "sl",
+      "sn",
+      "sr",
+      "st",
+      "sv",
+      "tf",
+      "tm",
+      "tt",
+      "ua",
+      "vh"
+     ],
+     "exemplo": "{\"id\": 2, \"nome\": \"Radar - Almenara/MG\", \"localidade\": \"al\", \"raio\": 400, \"lat_center\": \"-16.201531\", \"lon_center\": \"-40.674153\", \"lon_min\": \"-44.357644\", \"lon_max\": \"-36.853998\", \"lat_min\": \"-19.763455\", \"lat_max\": \"-12.574812\", \"path\": null, \"tamanho\": null, \"data\": null}"
+    },
+    "03km": {
+     "status": 200,
+     "status_api": true,
+     "mensagem": "200",
+     "quadros": 29,
+     "radares": [
+      "al",
+      "be",
+      "bv",
+      "ch",
+      "cn",
+      "cz",
+      "ga",
+      "jr",
+      "mi",
+      "mn",
+      "mo",
+      "mq",
+      "nt",
+      "pc",
+      "pl",
+      "pv",
+      "rb",
+      "sf",
+      "sg",
+      "sl",
+      "sn",
+      "sr",
+      "st",
+      "sv",
+      "tf",
+      "tm",
+      "tt",
+      "ua",
+      "vh"
+     ],
+     "exemplo": "{\"id\": 1, \"nome\": \"Radar - Almenara/MG\", \"localidade\": \"al\", \"raio\": 250, \"lat_center\": \"-16.201531\", \"lon_center\": \"-40.674153\", \"lon_min\": \"-42.990238\", \"lon_max\": \"-38.304844\", \"lat_min\": \"-18.43678125\", \"lat_max\": \"-13.941618\", \"path\": null, \"tamanho\": null, \"data\": null}"
+    },
+    "05km": {
+     "status": 200,
+     "status_api": true,
+     "mensagem": "200",
+     "quadros": 29,
+     "radares": [
+      "al",
+      "be",
+      "bv",
+      "ch",
+      "cn",
+      "cz",
+      "ga",
+      "jr",
+      "mi",
+      "mn",
+      "mo",
+      "mq",
+      "nt",
+      "pc",
+      "pl",
+      "pv",
+      "rb",
+      "sf",
+      "sg",
+      "sl",
+      "sn",
+      "sr",
+      "st",
+      "sv",
+      "tf",
+      "tm",
+      "tt",
+      "ua",
+      "vh"
+     ],
+     "exemplo": "{\"id\": 1, \"nome\": \"Radar - Almenara/MG\", \"localidade\": \"al\", \"raio\": 250, \"lat_center\": \"-16.201531\", \"lon_center\": \"-40.674153\", \"lon_min\": \"-42.990238\", \"lon_max\": \"-38.304844\", \"lat_min\": \"-18.43678125\", \"lat_max\": \"-13.941618\", \"path\": null, \"tamanho\": null, \"data\": null}"
+    },
+    "07km": {
+     "status": 200,
+     "status_api": true,
+     "mensagem": "200",
+     "quadros": 29,
+     "radares": [
+      "al",
+      "be",
+      "bv",
+      "ch",
+      "cn",
+      "cz",
+      "ga",
+      "jr",
+      "mi",
+      "mn",
+      "mo",
+      "mq",
+      "nt",
+      "pc",
+      "pl",
+      "pv",
+      "rb",
+      "sf",
+      "sg",
+      "sl",
+      "sn",
+      "sr",
+      "st",
+      "sv",
+      "tf",
+      "tm",
+      "tt",
+      "ua",
+      "vh"
+     ],
+     "exemplo": "{\"id\": 1, \"nome\": \"Radar - Almenara/MG\", \"localidade\": \"al\", \"raio\": 250, \"lat_center\": \"-16.201531\", \"lon_center\": \"-40.674153\", \"lon_min\": \"-42.990238\", \"lon_max\": \"-38.304844\", \"lat_min\": \"-18.43678125\", \"lat_max\": \"-13.941618\", \"path\": null, \"tamanho\": null, \"data\": null}"
+    },
+    "10km": {
+     "status": 200,
+     "status_api": true,
+     "mensagem": "200",
+     "quadros": 29,
+     "radares": [
+      "al",
+      "be",
+      "bv",
+      "ch",
+      "cn",
+      "cz",
+      "ga",
+      "jr",
+      "mi",
+      "mn",
+      "mo",
+      "mq",
+      "nt",
+      "pc",
+      "pl",
+      "pv",
+      "rb",
+      "sf",
+      "sg",
+      "sl",
+      "sn",
+      "sr",
+      "st",
+      "sv",
+      "tf",
+      "tm",
+      "tt",
+      "ua",
+      "vh"
+     ],
+     "exemplo": "{\"id\": 1, \"nome\": \"Radar - Almenara/MG\", \"localidade\": \"al\", \"raio\": 250, \"lat_center\": \"-16.201531\", \"lon_center\": \"-40.674153\", \"lon_min\": \"-42.990238\", \"lon_max\": \"-38.304844\", \"lat_min\": \"-18.43678125\", \"lat_max\": \"-13.941618\", \"path\": null, \"tamanho\": null, \"data\": null}"
+    },
+    "12km": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "15km": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "01km": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "02km": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "ppi": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "ppivr": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "ppiz": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "ppidbz": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "vr": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "vel": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "velocidade": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "velocidade_radial": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "doppler": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "srv": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "cappi": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "echotop": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "vil": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "zdr": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "rhohv": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "kdp": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "hca": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "acumulado": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    },
+    "chuva": {
+     "status": 200,
+     "status_api": false,
+     "mensagem": "Não foi informado um tipo de radar. Para mais informações acesse: https://ajuda.decea.gov.br/base-de-conhecimento/api-redemet-produtos-radar/",
+     "resposta": "{\"status\":false,\"message\":\"N\\u00e3o foi informado um tipo de radar. Para mais informa\\u00e7\\u00f5es acesse: https:\\/\\/ajuda.decea.gov.br\\/base-de-conhecimento\\/api-redemet-produtos-radar\\/\"}"
+    }
+   },
+   "lista_sem_tipo": {
+    "status": 200,
+    "resposta": "{\"status\":true,\"message\":200,\"data\":{\"tipo\":\"maxcappi\",\"anima\":[\"14:38\",\"14:58\",\"15:18\",\"15:38\",\"15:48\",\"16:08\",\"16:08\",\"16:08\"],\"radar\":[[{\"id\":2,\"nome\":\"Radar - Almenara\\/MG\",\"localidade\":\"al\",\"raio\":400,\"lat_center\":\"-16.201531\",\"lon_center\":\"-40.674153\",\"lon_min\":\"-44.357644\",\"lon_max\":\"-36.853998\",\"lat_min\":\"-19.763455\",\"lat_max\":\"-12.574812\",\"path\":null,\"tamanho\":null,\"data\":null},{\"id\":4,\"nome\":\"Radar - Bel\\u00e9m\\/PA\",\"localidade\":\"be\",\"raio\":400,\"lat_center\":\"-1.406667\",\"lon_center\":\"-48.461389\",\"lon_min\":\"-52.0561111111\",\"lon_max\":\"-44.9036111111\",\"lat_min\":\"-4.9613888889\",\"lat_max\":\"2.1891666667\",\"path\":\"https:\\/\\/estatico-redemet.decea.mil.br\\/radar\\/2026\\/11\\/21\\/be\\/maxcappi\\/maps\\/2026-11-21--14:38:08.png\",\"tamanho\":1985,\"data\":\"2026-11-21 14:38:08\"},{\"id\":6,\"nome\":\"Radar - "
+   }
+  }
+ }
 }
