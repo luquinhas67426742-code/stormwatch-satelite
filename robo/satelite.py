@@ -35,6 +35,7 @@ DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
+AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-18, num arquivo separado (limite de 25 MB do KV)
 VERSION = "hd10"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
@@ -465,11 +466,15 @@ def is_daylight(when):
 
 def process(ir_key, vis_key, stamp, when, ir18_key=None):
     print("Processando", stamp, "(dia)" if vis_key else "(noite)", "+ GOES-18" if ir18_key else "")
-    west = None
+    west = None; ak = None
     if ir18_key:
         try:
             f18 = open_remote(ir18_key, "/tmp/c13_18.nc"); p18 = proj_params(f18)
             west = (Grid(f18, p18, WEST, WEST_CUT + BLEND + 2, SOUTH, NORTH, smooth=0.0, fill=300.0), p18)
+            try:
+                ak = (Grid(f18, p18, AK_W, AK_E + 1, AK_S, AK_N, smooth=0.0, fill=300.0), p18)
+            except Exception as e:
+                print("  Alasca falhou:", e)
             f18.close(); os.remove("/tmp/c13_18.nc")
         except Exception as e:
             print("  GOES-18 falhou, usando só o GOES-19:", e); west = None
@@ -500,13 +505,24 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
             raise RuntimeError("Imagem grande demais para o KV.")
         kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", TTL)
         out[z] = box_bounds(z, box)
+    if ak is not None:   # V19: Alasca
+        try:
+            t = time.time(); box = pixel_box(BASE_Z, AK_W, AK_E, AK_S, AK_N)
+            im = draw(BASE_Z, box, ak[1], ak[0], None, when, None)
+            data = make_pack(im, 84, lossless=True)
+            kv_put(f"frame-{stamp}-z{BASE_Z}-ak{VERSION}.pack", data, "application/octet-stream", TTL)
+            out["ak"] = True
+            print(f"  Alasca: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
+        except Exception as e:
+            print("  Alasca falhou:", e)
     return out
 
 def save_index(frames, bounds):
     frames = sorted(frames, key=lambda fr: fr["time"])[-KEEP_FRAMES:]
     index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
              "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]}, "pack": True,
-             "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]}, "frames": frames}
+             "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]},
+             "ak": {"z": BASE_Z, "bounds": box_bounds(BASE_Z, pixel_box(BASE_Z, AK_W, AK_E, AK_S, AK_N))}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     return frames
 
@@ -544,7 +560,7 @@ def main():
             bounds = process(key, vis_key, stamp, when, k18)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True})
+        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak"))})
         saved = False
         if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
             frames = save_index(frames, bounds); saved = True
@@ -559,7 +575,7 @@ def main():
 GLM_PRODUCT = "GLM-L2-LCFA"
 GLM_W, GLM_E, GLM_S, GLM_N = -135.0, -25.0, -57.0, 56.0   # V14: raios também nos EUA, América Central e sul do Canadá
 GLM_WINDOW = 60 * 60            # segundos de passado (V12: 1 hora, a aba Raios tem 15/30/60 min)
-GLM_EVERY = 4 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
+GLM_EVERY = 6 * 60              # de quanto em quanto tempo grava no KV (cada gravação conta no limite)
 _glm_cache = {}                 # arquivo -> lista de (lat, lon, ms)
 
 def glm_time(key):
