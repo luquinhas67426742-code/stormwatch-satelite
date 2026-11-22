@@ -1,7 +1,7 @@
 # Testa quais produtos de radar a API da REDEMET aceita, com cada chave. Nunca imprime as chaves.
 import os, json, re, urllib.request, urllib.error, datetime
 
-KEYS = [(n, os.environ.get(n, '').strip()) for n in ('REDEMET_KEY', 'REDEMET_KEY_2', 'REDEMET_KEY_3')]
+KEYS = [(n, os.environ.get(n, '').strip()) for n in ('REDEMET_KEY', 'REDEMET_KEY_2', 'REDEMET_KEY_3', 'REDEMET_KEY_4')]
 ALL = [k for _, k in KEYS if k]
 TIPOS = ['maxcappi', '03km', '05km', '07km', '10km', '12km', '15km', '01km', '02km', 'ppi', 'ppivr', 'ppiz', 'ppidbz', 'vr', 'vel',
          'velocidade', 'velocidade_radial', 'doppler', 'srv', 'cappi', 'echotop', 'vil', 'zdr', 'rhohv', 'kdp', 'hca', 'acumulado', 'chuva']
