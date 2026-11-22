@@ -1,9 +1,10 @@
 {
- "quando": "2026-11-21 16:23 UTC",
+ "quando": "2026-11-22 16:02 UTC",
  "chaves": {
   "REDEMET_KEY": true,
   "REDEMET_KEY_2": false,
-  "REDEMET_KEY_3": false
+  "REDEMET_KEY_3": false,
+  "REDEMET_KEY_4": false
  },
  "por_chave": {
   "REDEMET_KEY": {
@@ -339,7 +340,7 @@
    },
    "lista_sem_tipo": {
     "status": 200,
-    "resposta": "{\"status\":true,\"message\":200,\"data\":{\"tipo\":\"maxcappi\",\"anima\":[\"14:38\",\"14:58\",\"15:18\",\"15:38\",\"15:48\",\"16:08\",\"16:08\",\"16:08\"],\"radar\":[[{\"id\":2,\"nome\":\"Radar - Almenara\\/MG\",\"localidade\":\"al\",\"raio\":400,\"lat_center\":\"-16.201531\",\"lon_center\":\"-40.674153\",\"lon_min\":\"-44.357644\",\"lon_max\":\"-36.853998\",\"lat_min\":\"-19.763455\",\"lat_max\":\"-12.574812\",\"path\":null,\"tamanho\":null,\"data\":null},{\"id\":4,\"nome\":\"Radar - Bel\\u00e9m\\/PA\",\"localidade\":\"be\",\"raio\":400,\"lat_center\":\"-1.406667\",\"lon_center\":\"-48.461389\",\"lon_min\":\"-52.0561111111\",\"lon_max\":\"-44.9036111111\",\"lat_min\":\"-4.9613888889\",\"lat_max\":\"2.1891666667\",\"path\":\"https:\\/\\/estatico-redemet.decea.mil.br\\/radar\\/2026\\/11\\/21\\/be\\/maxcappi\\/maps\\/2026-11-21--14:38:08.png\",\"tamanho\":1985,\"data\":\"2026-11-21 14:38:08\"},{\"id\":6,\"nome\":\"Radar - "
+    "resposta": "{\"status\":true,\"message\":200,\"data\":{\"tipo\":\"maxcappi\",\"anima\":[\"14:38\",\"14:58\",\"15:18\",\"15:38\",\"15:38\",\"15:38\",\"15:38\",\"15:38\"],\"radar\":[[{\"id\":2,\"nome\":\"Radar - Almenara\\/MG\",\"localidade\":\"al\",\"raio\":400,\"lat_center\":\"-16.201531\",\"lon_center\":\"-40.674153\",\"lon_min\":\"-44.357644\",\"lon_max\":\"-36.853998\",\"lat_min\":\"-19.763455\",\"lat_max\":\"-12.574812\",\"path\":null,\"tamanho\":null,\"data\":null},{\"id\":4,\"nome\":\"Radar - Bel\\u00e9m\\/PA\",\"localidade\":\"be\",\"raio\":400,\"lat_center\":\"-1.406667\",\"lon_center\":\"-48.461389\",\"lon_min\":\"-52.0561111111\",\"lon_max\":\"-44.9036111111\",\"lat_min\":\"-4.9613888889\",\"lat_max\":\"2.1891666667\",\"path\":\"https:\\/\\/estatico-redemet.decea.mil.br\\/radar\\/2026\\/11\\/22\\/be\\/maxcappi\\/maps\\/2026-11-22--14:38:07.png\",\"tamanho\":2032,\"data\":\"2026-11-22 14:38:07\"},{\"id\":6,\"nome\":\"Radar - "
    }
   }
  }
