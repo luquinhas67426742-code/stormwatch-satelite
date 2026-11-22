@@ -1,0 +1,50 @@
+{
+ "http://www.funceme.br/radar/index.php?nome=radars&produto=pcappi&item=03000&tempo=3": {
+  "status": 0,
+  "type": "HTTP Error 404: Not Found",
+  "len": 0,
+  "title": null,
+  "imgs": [],
+  "radar_urls": []
+ },
+ "https://www.funceme.br/radar/index.php?nome=radars&produto=pcappi&item=03000&tempo=3": {
+  "status": 0,
+  "type": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1081)>",
+  "len": 0,
+  "title": null,
+  "imgs": [],
+  "radar_urls": []
+ },
+ "http://www.funceme.br/radar/": {
+  "status": 0,
+  "type": "HTTP Error 404: Not Found",
+  "len": 0,
+  "title": null,
+  "imgs": [],
+  "radar_urls": []
+ },
+ "https://cdn.funceme.br/": {
+  "status": 0,
+  "type": "<urlopen error timed out>",
+  "len": 0,
+  "title": null,
+  "imgs": [],
+  "radar_urls": []
+ },
+ "https://www.funceme.br/": {
+  "status": 0,
+  "type": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1081)>",
+  "len": 0,
+  "title": null,
+  "imgs": [],
+  "radar_urls": []
+ },
+ "https://funceme.br/app-radar/": {
+  "status": 0,
+  "type": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1081)>",
+  "len": 0,
+  "title": null,
+  "imgs": [],
+  "radar_urls": []
+ }
+}
