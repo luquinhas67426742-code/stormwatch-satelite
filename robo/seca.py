@@ -15,7 +15,8 @@ import numpy as np, requests
 
 from satelite import kv_put, kv_get_json
 
-BASE = "https://dataserver-coids.inpe.br/queimadas/queimadas/riscofogo_meteorologia/observado/numero_dias_sem_chuva/"
+ROOT = "https://dataserver-coids.inpe.br/queimadas/queimadas/riscofogo_meteorologia/observado/"
+BASE = ROOT + "numero_dias_sem_chuva/"
 STEP = 0.25           # grade que vai pro site
 CAP = 254             # dias acima disso viram 254; 255 = sem dado
 
@@ -114,7 +115,17 @@ def resample(lat, lon, data):
     return lats, lons, out
 
 
+def listar():
+    import re
+    for pasta in ("temperatura/", "umidade_relativa/", "risco_fogo/"):
+        r = requests.get(ROOT + pasta, timeout=60)
+        nomes = sorted(set(re.findall(r'href="([^"]+\.nc)"', r.text)))
+        print(pasta, r.status_code, len(nomes), nomes[-4:])
+
+
 def main():
+    if "--listar" in sys.argv:
+        listar(); return
     day, raw = download()
     old = kv_get_json("seca.json")
     if old and old.get("date") == day.isoformat() and "--forcar" not in sys.argv:

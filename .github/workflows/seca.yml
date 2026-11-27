@@ -9,6 +9,10 @@ on:
         description: "Gravar de novo mesmo se o dia já estiver salvo"
         type: boolean
         default: false
+      listar:
+        description: "Só listar os arquivos do INPE (teste)"
+        type: boolean
+        default: false
 concurrency:
   group: seca
   cancel-in-progress: false
@@ -24,7 +28,7 @@ jobs:
           cache: pip
           cache-dependency-path: robo/requirements.txt
       - run: pip install -r robo/requirements.txt
-      - run: python robo/seca.py ${{ inputs.forcar && '--forcar' || '' }}
+      - run: python robo/seca.py ${{ inputs.forcar && '--forcar' || '' }} ${{ inputs.listar && '--listar' || '' }}
         working-directory: .
         env:
           PYTHONUNBUFFERED: "1"
