@@ -101,23 +101,29 @@ def read_grid(raw, prefer=()):
     return lat.ravel(), lon.ravel(), data
 
 
-def resample(lat, lon, data, enc=lambda v: v, cap=CAP, valid=lambda b: b >= 0):
+def resample(lat, lon, data, enc=lambda v: v, cap=CAP, valid=lambda b: b >= 0, target=None):
     """Média em blocos para a grade de STEP graus (norte → sul, oeste → leste)."""
     if lat[0] < lat[-1]:
         lat = lat[::-1]; data = data[::-1, :]
     if lon[0] > lon[-1]:
         lon = lon[::-1]; data = data[:, ::-1]
-    north = np.floor(lat.max() / STEP) * STEP; south = np.ceil(lat.min() / STEP) * STEP
-    west = np.ceil(lon.min() / STEP) * STEP; east = np.floor(lon.max() / STEP) * STEP
-    lats = np.arange(north, south - 1e-9, -STEP); lons = np.arange(west, east + 1e-9, STEP)
+    if target is not None:
+        lats, lons = target
+    else:
+        north = np.floor(lat.max() / STEP) * STEP; south = np.ceil(lat.min() / STEP) * STEP
+        west = np.ceil(lon.min() / STEP) * STEP; east = np.floor(lon.max() / STEP) * STEP
+        lats = np.arange(north, south - 1e-9, -STEP); lons = np.arange(west, east + 1e-9, STEP)
     iy = np.clip(np.searchsorted(-lat, -lats), 0, lat.size - 1)
     ix = np.clip(np.searchsorted(lon, lons), 0, lon.size - 1)
     dlat = abs(lat[1] - lat[0]) if lat.size > 1 else STEP
     k = max(1, int(round(STEP / dlat / 2)))
     out = np.full((lats.size, lons.size), 255, dtype=np.uint8)
+    tol = max(STEP, abs(lon[1] - lon[0]) if lon.size > 1 else STEP)
     for r, y in enumerate(iy):
+        if abs(lat[y] - lats[r]) > tol: continue
         rows = data[max(0, y - k):y + k + 1]
         for c, x in enumerate(ix):
+            if abs(lon[x] - lons[c]) > tol: continue
             block = rows[:, max(0, x - k):x + k + 1]
             v = block[np.isfinite(block)]
             v = v[valid(v)]
@@ -144,10 +150,13 @@ def main():
     lat, lon, ndwr = read_grid(raw)
     _, rt = download("temp", day); _, rr = download("rh", day)
     tl, to, temp = read_grid(rt, ("max",)); hl, ho, rh = read_grid(rr, ("min",))
-    print("temperatura: %.1f a %.1f · umidade: %.1f a %.1f" % (np.nanmin(temp), np.nanmax(temp), np.nanmin(rh), np.nanmax(rh)))
+    if np.nanmax(temp) > 150:          # veio em Kelvin
+        temp = temp - 273.15; print("temperatura convertida de Kelvin para °C")
+    print("temperatura: %.1f a %.1f °C · umidade: %.1f a %.1f %%" % (np.nanmin(temp), np.nanmax(temp), np.nanmin(rh), np.nanmax(rh)))
     lats, lons, gdays = resample(lat, lon, ndwr)
-    _, _, gtemp = resample(tl, to, temp, enc=lambda v: v + 50, valid=lambda b: (b > -80) & (b < 70))   # guarda +50 (aceita negativos)
-    _, _, grh = resample(hl, ho, rh)
+    # temperatura guardada +50 (aceita negativos)
+    _, _, gtemp = resample(tl, to, temp, enc=lambda v: v + 50, valid=lambda b: (b > -80) & (b < 70), target=(lats, lons))
+    _, _, grh = resample(hl, ho, rh, valid=lambda b: (b >= 0) & (b <= 100), target=(lats, lons))
     if not (gdays.shape == gtemp.shape == grh.shape):
         raise SystemExit("As grades do INPE vieram com tamanhos diferentes.")
     ok = (gdays < 255) & (gtemp < 255) & (grh < 255) & ((gtemp.astype(int) - 50) >= TEMP_MIN) & (grh <= RH_MAX)
