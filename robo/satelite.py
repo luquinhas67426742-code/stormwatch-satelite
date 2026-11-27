@@ -43,7 +43,7 @@ AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-
 # V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
 # Pra voltar a usar o visível: variável SAT_DAYVIS=1.
 DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
-VERSION = "hd11"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd12"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
