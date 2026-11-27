@@ -40,6 +40,9 @@ LONG_HOURS = 12
 def keeper(stamp):
     return stamp[10:12] == "00"
 AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-18, num arquivo separado (limite de 25 MB do KV)
+# V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
+# Pra voltar a usar o visível: variável SAT_DAYVIS=1.
+DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
 VERSION = "hd11"                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
@@ -568,14 +571,14 @@ def main():
         index = {"frames": []}  # mudou o desenho: começa uma animação nova
     vis_by_start = {}
     try:
-        for k in list_keys(VIS_BAND):
+        for k in (list_keys(VIS_BAND) if DAY_VIS else []):
             vis_by_start[scan_start(k)[:11]] = k   # V20: casa pelo MINUTO (o visível às vezes começa 1 s antes/depois)
     except Exception as e:
         print("Lista do visível falhou:", e)
     # V20: quadros de DIA que ficaram sem o visível (bug do segundo) são refeitos, senão o fundo pisca na animação
     redo = set()
     for fr in index["frames"]:
-        if not fr.get("day") and is_daylight(dt.datetime.fromtimestamp(fr["time"] / 1000, dt.timezone.utc).replace(tzinfo=None)):
+        if DAY_VIS and not fr.get("day") and is_daylight(dt.datetime.fromtimestamp(fr["time"] / 1000, dt.timezone.utc).replace(tzinfo=None)):
             k = next((ik for ik in ir_keys if stamp_of(ik)[0] == fr["stamp"]), None)
             if k and scan_start(k)[:11] in vis_by_start:
                 redo.add(fr["stamp"])
@@ -595,7 +598,7 @@ def main():
     print(f"Faltam {len(todo)} quadro(s); fazendo do mais novo pro mais velho.")
     frames = [fr for fr in index["frames"] if fr["stamp"] not in redo]; bounds = None; saved = False
     for i, (key, stamp, ms, when) in enumerate(todo):
-        vis_key = vis_by_start.get(scan_start(key)[:11]) if is_daylight(when) else None
+        vis_key = vis_by_start.get(scan_start(key)[:11]) if (DAY_VIS and is_daylight(when)) else None
         try:
             st = scan_start(key)
             k18 = g18_by_start.get(st) or next((v for s_, v in g18_by_start.items() if s_[:11] == st[:11]), None)   # mesmo minuto
