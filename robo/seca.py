@@ -17,21 +17,28 @@ from satelite import kv_put, kv_get_json
 
 ROOT = "https://dataserver-coids.inpe.br/queimadas/queimadas/riscofogo_meteorologia/observado/"
 BASE = ROOT + "numero_dias_sem_chuva/"
-STEP = 0.25           # grade que vai pro site
+STEP = 0.5            # grade que vai pro site
+TEMP_MIN = 35.0       # °C: só conta seca se a máxima passar disso
+RH_MAX = 20.0         # %: e se a umidade mínima ficar abaixo disso
+NIVEIS = (30, 60, 90) # dias sem chuva: amarelo, laranja, vermelho
 CAP = 254             # dias acima disso viram 254; 255 = sem dado
 
 
-def url_for(day):
-    name = "INPE_FireRiskModel_2.2_NDWR_%s.nc" % day.strftime("%Y%m%d")
+PASTAS = {"days": ("numero_dias_sem_chuva/", "NDWR"), "temp": ("temperatura/", "Temperature"), "rh": ("umidade_relativa/", "RelativeHumidity")}
+
+
+def url_for(day, kind="days"):
+    pasta, tag = PASTAS[kind]
+    name = "INPE_FireRiskModel_2.2_%s_%s.nc" % (tag, day.strftime("%Y%m%d"))
     # arquivos do ano corrente ficam na raiz; anos anteriores numa pasta do ano
-    return [BASE + name, BASE + day.strftime("%Y") + "/" + name]
+    return [ROOT + pasta + name, ROOT + pasta + day.strftime("%Y") + "/" + name]
 
 
-def download():
-    today = dt.datetime.utcnow().date()
-    for back in range(0, 8):
-        day = today - dt.timedelta(days=back)
-        for u in url_for(day):
+def download(kind="days", only=None):
+    today = dt.datetime.now(dt.timezone.utc).date()
+    days = [only] if only else [today - dt.timedelta(days=b) for b in range(0, 8)]
+    for day in days:
+        for u in url_for(day, kind):
             try:
                 r = requests.get(u, timeout=120, headers={"user-agent": "Inflow-robo-seca/1.0 (dados abertos INPE)"})
             except requests.RequestException as e:
@@ -40,11 +47,12 @@ def download():
                 print("baixado", u, len(r.content), "bytes")
                 return day, r.content
             print("sem arquivo", u, r.status_code)
-    raise SystemExit("Nenhum arquivo de dias sem chuva nos últimos 8 dias.")
+    raise SystemExit("Nenhum arquivo %s encontrado." % kind)
 
 
-def read_grid(raw):
-    """Lê o NetCDF (formato 4/HDF5 ou clássico) e devolve (lats, lons, valores 2D)."""
+def read_grid(raw, prefer=()):
+    """Lê o NetCDF (formato 4/HDF5 ou clássico) e devolve (lats, lons, valores 2D).
+    prefer: pedaços de nome pra escolher a variável certa (ex.: 'max', 'min')."""
     with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as f:
         f.write(raw); path = f.name
     arrays = {}
@@ -79,8 +87,10 @@ def read_grid(raw):
     if lat is None or lon is None:
         raise SystemExit("Não achei latitude/longitude no arquivo.")
     data = None
-    for k, a in arrays.items():
-        if k.lower() in ("lat", "latitude", "y", "lon", "longitude", "x", "time", "crs"): continue
+    keys = [k for k in arrays if k.lower() not in ("lat", "latitude", "y", "lon", "longitude", "x", "time", "crs")]
+    keys.sort(key=lambda k: 0 if any(p in k.lower() for p in prefer) else 1)
+    for k in keys:
+        a = arrays[k]
         b = np.squeeze(a)
         if b.ndim == 2 and b.shape == (lat.size, lon.size):
             data = b; print("usando a variável", k); break
@@ -91,8 +101,8 @@ def read_grid(raw):
     return lat.ravel(), lon.ravel(), data
 
 
-def resample(lat, lon, data):
-    """Média em blocos para a grade de 0,25° (norte → sul, oeste → leste)."""
+def resample(lat, lon, data, enc=lambda v: v, cap=CAP, valid=lambda b: b >= 0):
+    """Média em blocos para a grade de STEP graus (norte → sul, oeste → leste)."""
     if lat[0] < lat[-1]:
         lat = lat[::-1]; data = data[::-1, :]
     if lon[0] > lon[-1]:
@@ -109,9 +119,10 @@ def resample(lat, lon, data):
         rows = data[max(0, y - k):y + k + 1]
         for c, x in enumerate(ix):
             block = rows[:, max(0, x - k):x + k + 1]
-            v = block[np.isfinite(block) & (block >= 0)]
+            v = block[np.isfinite(block)]
+            v = v[valid(v)]
             if v.size:
-                out[r, c] = int(min(CAP, round(float(np.mean(v)))))
+                out[r, c] = int(max(0, min(cap, round(float(enc(np.mean(v)))))))
     return lats, lons, out
 
 
@@ -126,22 +137,33 @@ def listar():
 def main():
     if "--listar" in sys.argv:
         listar(); return
-    day, raw = download()
+    day, raw = download("days")
     old = kv_get_json("seca.json")
-    if old and old.get("date") == day.isoformat() and "--forcar" not in sys.argv:
+    if old and old.get("date") == day.isoformat() and old.get("v") == 2 and "--forcar" not in sys.argv:
         print("seca.json já está com", day, "- nada a fazer"); return
-    lat, lon, data = read_grid(raw)
-    finite = data[np.isfinite(data)]
-    print("dias sem chuva: min", np.nanmin(finite), "max", np.nanmax(finite), "pontos", finite.size)
-    lats, lons, grid = resample(lat, lon, data)
-    valid = grid[grid < 255]
-    print("grade %dx%d · ≥30 dias: %d pontos · ≥60 dias: %d pontos" % (lats.size, lons.size, int((valid >= 30).sum()), int((valid >= 60).sum())))
+    lat, lon, ndwr = read_grid(raw)
+    _, rt = download("temp", day); _, rr = download("rh", day)
+    tl, to, temp = read_grid(rt, ("max",)); hl, ho, rh = read_grid(rr, ("min",))
+    print("temperatura: %.1f a %.1f · umidade: %.1f a %.1f" % (np.nanmin(temp), np.nanmax(temp), np.nanmin(rh), np.nanmax(rh)))
+    lats, lons, gdays = resample(lat, lon, ndwr)
+    _, _, gtemp = resample(tl, to, temp, enc=lambda v: v + 50, valid=lambda b: (b > -80) & (b < 70))   # guarda +50 (aceita negativos)
+    _, _, grh = resample(hl, ho, rh)
+    if not (gdays.shape == gtemp.shape == grh.shape):
+        raise SystemExit("As grades do INPE vieram com tamanhos diferentes.")
+    ok = (gdays < 255) & (gtemp < 255) & (grh < 255) & ((gtemp.astype(int) - 50) >= TEMP_MIN) & (grh <= RH_MAX)
+    lvl = np.zeros(gdays.shape, dtype=np.uint8)
+    for n, dias in enumerate(NIVEIS, 1):
+        lvl[ok & (gdays >= dias)] = n
+    print("grade %dx%d · seca (30+ dias, %g °C+, umidade <= %g%%): amarelo %d · laranja %d · vermelho %d" % (
+        lats.size, lons.size, TEMP_MIN, RH_MAX, int((lvl == 1).sum()), int((lvl == 2).sum()), int((lvl == 3).sum())))
+    b64 = lambda a: base64.b64encode(a.tobytes()).decode()
     out = {
-        "date": day.isoformat(), "made": int(time.time()), "step": STEP,
+        "v": 2, "date": day.isoformat(), "made": int(time.time()), "step": STEP,
         "lat0": round(float(lats[0]), 4), "lon0": round(float(lons[0]), 4),
         "h": int(lats.size), "w": int(lons.size),
-        "days": base64.b64encode(grid.tobytes()).decode(),
-        "source": "INPE · Programa Queimadas · número de dias sem chuva (dados abertos)",
+        "rule": {"days": list(NIVEIS), "tempMin": TEMP_MIN, "rhMax": RH_MAX},
+        "level": b64(lvl), "days": b64(gdays), "temp50": b64(gtemp), "rh": b64(grh),
+        "source": "INPE · Programa Queimadas · dias sem chuva, temperatura máxima e umidade (dados abertos)",
     }
     body = json.dumps(out, separators=(",", ":")).encode()
     print("gravando seca.json:", len(body), "bytes")
