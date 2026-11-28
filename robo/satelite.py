@@ -29,9 +29,11 @@ IR_BAND, VIS_BAND = "C13", "C02"
 # V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
 WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 72.0   # V17: Canadá inteiro (até 72°N)
 BASE_Z = 6
-# recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF
-D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
-DETAIL_Z = 8
+# V2.36 do site: recorte de detalhe z7 (≈1,2 km por pixel) na faixa tropical — perto do equador o z6
+# (2,4 km) é mais grosso que o próprio infravermelho do GOES (2 km) e ficava pixelado. O z8 do Sul/Sudeste
+# só servia pro visível (desligado), então virou este z7 (mesmo número de gravações no KV).
+D_WEST, D_EAST, D_SOUTH, D_NORTH = -95.0, -30.0, -36.0, 30.0
+DETAIL_Z = 7
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
@@ -43,7 +45,7 @@ AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-
 # V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
 # Pra voltar a usar o visível: variável SAT_DAYVIS=1.
 DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
-VERSION = "hd12"                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd13"                      # V2.36: detalhe z7 tropical + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -367,7 +369,7 @@ class Grid:
         return out
 
 # ---------------------------------------------------------------- desenho
-STYLE = os.environ.get("SAT_STYLE", "v22")   # V22: cores e contraste novos (ligado em 21/11; "v21" = antigo)
+STYLE = os.environ.get("SAT_STYLE", "v23")   # V2.36: v23 = nuvem fria colorida igual em todo lugar (no norte ficava cinza)   # V22: cores e contraste novos (ligado em 21/11; "v21" = antigo)
 def vis_tone(rn, style):
     """Brilho do visível (0..1 -> 0..255). V22: mais contraste (mar e chão mais escuros, nuvem mais branca)."""
     if style == "v21":
@@ -377,7 +379,7 @@ def vis_tone(rn, style):
 def cold_limit(lat, style, when=None):
     """V22: a partir de que temperatura a nuvem vira COLORIDA. Perto dos polos o próprio chão
     fica abaixo de -20 °C no inverno; lá só pinta de cor o que é bem mais frio que o chão."""
-    if style == "v21":
+    if style in ("v21", "v23"):
         return np.full(lat.shape, -20.5)
     # só no hemisfério que está no inverno (chão gelado); no verão nuvem fria a -25 °C é nuvem mesmo
     m = (when or dt.datetime.utcnow()).month
