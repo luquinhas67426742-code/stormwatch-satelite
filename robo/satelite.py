@@ -44,7 +44,7 @@ AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-
 # V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
 # Pra voltar a usar o visível: variável SAT_DAYVIS=1.
 DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
-VERSION = "hd16"                      # V2.38: pixel real em todo lugar (nem no Canadá mistura) + detalhe z8 + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd17"                      # V2.39: dado bruto (o site desenha o pixel real) + base z6                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -487,6 +487,48 @@ def make_pack(img, q, lossless=True, with_lite=False):
                       separators=(",", ":")).encode()
     return b"SWPK" + len(head).to_bytes(4, "little") + head + b"".join(blobs)
 
+# ---------------------------------------------------------------- V2.39: DADO BRUTO (pixel real desenhado pelo site)
+# O site recebe a temperatura de cada pixel do GOES-19 (grade original dele) e desenha cada pixel com o
+# formato real (quadrilátero inclinado, bordas retas) em qualquer zoom — igual ao Prev Master.
+# 1 byte por pixel: 0 = sem dado; 1..195 = 163–260 K de 0,5 em 0,5; 196..255 = 261–320 K de 1 em 1.
+RAW_W = WEST_CUT - BLEND - 1.0           # a oeste disso o site usa a imagem base (GOES-18)
+RAW_SPLIT, RAW_COLD0 = 260.0, 163.0
+def raw_encode(tk):
+    q = np.zeros(tk.shape, np.uint8)
+    ok = np.isfinite(tk)
+    cold = ok & (tk < RAW_SPLIT); warm = ok & ~cold
+    q[cold] = np.clip(np.round((tk[cold] - RAW_COLD0) / 0.5) + 1, 1, 195).astype(np.uint8)
+    q[warm] = np.clip(np.round(tk[warm] - RAW_SPLIT) + 196, 196, 255).astype(np.uint8)
+    return q
+def raw_decode_k(code):
+    code = np.asarray(code, np.float64)
+    return np.where(code <= 195, RAW_COLD0 + (code - 1) * 0.5, RAW_SPLIT + (code - 196))
+def raw_lut():
+    """256 cores (RGB) — a paleta do site é a mesma do robô."""
+    codes = np.arange(256); tc = raw_decode_k(codes) - 273.15
+    rgb = ir_colors(tc).astype(np.uint8); rgb[0] = 0
+    return rgb.tobytes()
+def make_raw(f, p):
+    import base64
+    g = Grid(f, p, RAW_W, EAST, SOUTH, NORTH, pad=0.5, smooth=0.0, fill=np.nan)
+    tk = np.where(g.valid > 0.5, g.coef, np.nan)
+    q = raw_encode(tk); H, W = q.shape
+    cols, rows = math.ceil(W / CHUNK), math.ceil(H / CHUNK)
+    blobs, chunks, off = [], [], 0
+    for r in range(rows):
+        for c in range(cols):
+            part = q[r * CHUNK:(r + 1) * CHUNK, c * CHUNK:(c + 1) * CHUNK]
+            if not part.any():
+                chunks.append(None); continue
+            b = io.BytesIO(); Image.fromarray(part, "L").save(b, "PNG", optimize=False, compress_level=7)
+            bb = b.getvalue(); chunks.append([off, len(bb)]); blobs.append(bb); off += len(bb)
+    geo = {"req": p["req"], "rpol": p["rpol"], "H": p["H"], "lon0": p["lon0"],
+           "ofx": g.ofx, "sfx": g.sfx, "ofy": g.ofy, "sfy": g.sfy, "c0": g.c0, "r0": g.r0}
+    head = json.dumps({"w": W, "h": H, "cs": CHUNK, "cols": cols, "rows": rows, "lite": None, "chunks": chunks,
+                       "raw": 1, "geo": geo, "cut": RAW_W, "lut": base64.b64encode(raw_lut()).decode()},
+                      separators=(",", ":")).encode()
+    return b"SWPK" + len(head).to_bytes(4, "little") + head + b"".join(blobs), (W, H)
+
 # ---------------------------------------------------------------- principal
 def is_daylight(when):
     lat, lon = np.meshgrid(np.linspace(SOUTH, NORTH, 30), np.linspace(WEST, EAST, 30))
@@ -508,7 +550,15 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
             print("  GOES-18 falhou, usando só o GOES-19:", e); west = None
     fi = open_remote(ir_key, "/tmp/c13.nc"); p = proj_params(fi)
     ir_base = Grid(fi, p, WEST, EAST, SOUTH, NORTH, smooth=0.0, fill=300.0)
-    ir_det = Grid(fi, p, D_WEST, D_EAST, D_SOUTH, D_NORTH, smooth=0.0, fill=300.0)  # sem desfoque: mantém o contraste
+    raw_data = None
+    try:
+        t = time.time(); raw_data, raw_size = make_raw(fi, p)
+        print(f"  dado bruto: {raw_size[0]}x{raw_size[1]} px, pacote {len(raw_data)/1e6:.1f} MB, {time.time()-t:.1f}s")
+        if len(raw_data) > 24e6:
+            print("  dado bruto grande demais; fica sem"); raw_data = None
+    except Exception as e:
+        print("  dado bruto falhou:", e); raw_data = None
+    ir_det = None
     fi.close()
     vis_base = vis_det = None
     if vis_key:
@@ -520,8 +570,10 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
         except Exception as e:
             print("  visível falhou, usando só infravermelho:", e)
     out = {}
-    for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),
-                                         (DETAIL_Z, (D_WEST, D_EAST, D_SOUTH, D_NORTH), ir_det, vis_det, 92)):
+    if raw_data is not None:   # V2.39: o dado bruto substitui o detalhe z8 (mesmo número de gravações no KV)
+        kv_put(f"frame-{stamp}-z9-raw{VERSION}.pack", raw_data, "application/octet-stream", TTL)
+        out["raw"] = True
+    for z, (w, e, s, n), irg, visg, q in ((BASE_Z, (WEST, EAST, SOUTH, NORTH), ir_base, vis_base, 84),):
         t = time.time(); box = pixel_box(z, w, e, s, n)
         im = draw(z, box, p, irg, visg, when, west if z == BASE_Z else None)
         data = make_pack(im, q, lossless=True, with_lite=(z == BASE_Z))   # V10: sem perda = pixel exato
@@ -555,11 +607,11 @@ def save_index(frames, bounds):
     if recent:
         # V21: além das últimas 3 h (de 10 em 10 min), 1 quadro por hora até 12 h atrás, só a imagem base
         lim = recent[0]["time"]; old_lim = recent[-1]["time"] - LONG_HOURS * 3600 * 1000
-        older = [dict(fr, detail=False, ak=False) for fr in frames[:-KEEP_FRAMES] if fr.get("long") and fr["time"] >= old_lim and fr["time"] < lim]
+        older = [dict(fr, detail=False, ak=False, raw=False) for fr in frames[:-KEEP_FRAMES] if fr.get("long") and fr["time"] >= old_lim and fr["time"] < lim]
         frames = older + recent
     index = {"updated": int(time.time() * 1000), "band": "C13+C02", "ver": VERSION, "satellite": "GOES-19",
              "zooms": [BASE_Z], "bounds": {f"z{BASE_Z}": bounds[BASE_Z]}, "pack": True,
-             "detail": {"z": DETAIL_Z, "bounds": bounds[DETAIL_Z]},
+             "raw": {"enc": 1, "cut": RAW_W, "bounds": [SOUTH, RAW_W, NORTH, EAST]},
              "ak": {"z": BASE_Z, "bounds": box_bounds(BASE_Z, pixel_box(BASE_Z, AK_W, AK_E, AK_S, AK_N))}, "frames": frames}
     kv_put("index.json", json.dumps(index), "application/json")
     return frames
@@ -607,7 +659,7 @@ def main():
             bounds = process(key, vis_key, stamp, when, k18)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": not bounds.get("nodetail"), "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak")), "long": keeper(stamp)})
+        frames.append({"stamp": stamp, "time": ms, "detail": False, "raw": bool(bounds.get("raw")), "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak")), "long": keeper(stamp)})
         saved = False
         if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
             frames = save_index(frames, bounds); saved = True
