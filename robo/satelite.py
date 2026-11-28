@@ -532,8 +532,12 @@ def process(ir_key, vis_key, stamp, when, ir18_key=None):
         if len(data) > 23e6:
             print("  pacote sem perda grande demais; usando qualidade 95 no detalhe")
             data = make_pack(im, 95, lossless=False, with_lite=(z == BASE_Z))   # V15: base das Américas pode ficar grande
+        if len(data) > 23e6 and z == DETAIL_Z:
+            data = make_pack(im, 85, lossless=False)   # V2.36: detalhe z7 grande — qualidade 85 ainda fica nítido
         print(f"  z{z}: {im.size[0]}x{im.size[1]} px, pacote {len(data)/1e6:.1f} MB, {time.time()-t:.1f}s")
         if len(data) > 24e6:
+            if z == DETAIL_Z:   # não perde o quadro inteiro por causa do detalhe: fica só a base
+                print("  detalhe grande demais; quadro sem detalhe"); out[z] = box_bounds(z, box); out["nodetail"] = True; continue
             raise RuntimeError("Imagem grande demais para o KV.")
         kv_put(f"frame-{stamp}-z{z}-{VERSION}.pack", data, "application/octet-stream", LONG_TTL if (z == BASE_Z and keeper(stamp)) else TTL)
         out[z] = box_bounds(z, box)
@@ -607,7 +611,7 @@ def main():
             bounds = process(key, vis_key, stamp, when, k18)
         except Exception as e:
             print("  falhou:", e); continue
-        frames.append({"stamp": stamp, "time": ms, "detail": True, "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak")), "long": keeper(stamp)})
+        frames.append({"stamp": stamp, "time": ms, "detail": not bounds.get("nodetail"), "day": bool(vis_key), "pack": True, "ak": bool(bounds.get("ak")), "long": keeper(stamp)})
         saved = False
         if i % 3 == 2:   # salva o progresso de vez em quando (cada gravação conta no limite do KV)
             frames = save_index(frames, bounds); saved = True
