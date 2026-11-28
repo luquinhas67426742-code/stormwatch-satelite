@@ -29,11 +29,10 @@ IR_BAND, VIS_BAND = "C13", "C02"
 # V15: as Américas (do sul da Argentina ao sul do Canadá), imagem base z6
 WEST, EAST, SOUTH, NORTH = -135.0, -25.0, -57.0, 72.0   # V17: Canadá inteiro (até 72°N)
 BASE_Z = 6
-# V2.36 do site: recorte de detalhe z7 (≈1,2 km por pixel) na faixa tropical — perto do equador o z6
-# (2,4 km) é mais grosso que o próprio infravermelho do GOES (2 km) e ficava pixelado. O z8 do Sul/Sudeste
-# só servia pro visível (desligado), então virou este z7 (mesmo número de gravações no KV).
-D_WEST, D_EAST, D_SOUTH, D_NORTH = -95.0, -30.0, -36.0, 30.0
-DETAIL_Z = 7
+# recorte de detalhe (z8 ≈ 500-600 m por pixel): Sul, Sudeste, MS, GO e DF — o pixel real do GOES aparece
+# nítido, no formato dele (V2.37: voltou depois do teste com z7, que transformava o pixel em retângulo)
+D_WEST, D_EAST, D_SOUTH, D_NORTH = -58.0, -38.0, -34.5, -14.0
+DETAIL_Z = 8
 KEEP_FRAMES = 18                     # 3 horas de passado (1 quadro a cada 10 min)
 MAX_PER_RUN = 8                      # quadros novos por rodada (o visível é pesado)
 TTL = 4 * 3600                       # o KV apaga sozinho depois de 4 h
@@ -45,7 +44,7 @@ AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-
 # V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
 # Pra voltar a usar o visível: variável SAT_DAYVIS=1.
 DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
-VERSION = "hd14"                      # V2.36b: sem pixel retangular (temperatura interpolada) + detalhe z7 + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd15"                      # V2.37: pixel real nítido (sem misturar) + detalhe z8 + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -401,11 +400,16 @@ def draw(z, box, p, ir, vis, when, west=None, style=None):
         gx, gy = geos_xy(LAT, LON, p)
         # V18: no norte (Canadá) cada pixel do GOES fica enorme e esticado; o "pixel mais próximo"
         # vira escadinha. Lá a temperatura é interpolada (bilinear) — as cores continuam as da paleta.
-        # V2.36b: interpolação (bilinear) da TEMPERATURA em todo lugar — o pixel do GOES longe do ponto
-        # abaixo do satélite é um retângulo esticado; com o "mais próximo" aparecia o retângulo. As cores
-        # continuam as da paleta (a temperatura é que é suavizada, igual ao Prev Master).
+        # V18: no norte (Canadá) cada pixel do GOES fica enorme e esticado; o "pixel mais próximo"
+        # vira escadinha. Lá a temperatura é interpolada (bilinear) — as cores continuam as da paleta.
+        # V2.37: no resto, pixel real do satélite, sem misturar.
+        latw = smoothstep((np.abs(LAT) - 42.0) / 12.0)
         def samp(g, x, y):
-            return g.sample(x, y, order=1) - 273.15
+            t = g.sample(x, y)
+            if latw.max() > 0:
+                tl = g.sample(x, y, order=1)
+                t = np.where(np.isfinite(tl) & np.isfinite(t), t * (1 - latw) + tl * latw, t)
+            return t - 273.15
         tc = samp(ir, gx, gy)
         use18 = np.zeros(tc.shape, bool)
         if west is not None and LON.min() < WEST_CUT + BLEND:
