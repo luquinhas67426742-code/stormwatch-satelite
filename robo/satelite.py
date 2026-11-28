@@ -44,7 +44,7 @@ AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-
 # V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
 # Pra voltar a usar o visível: variável SAT_DAYVIS=1.
 DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
-VERSION = "hd15"                      # V2.37: pixel real nítido (sem misturar) + detalhe z8 + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd16"                      # V2.38: pixel real em todo lugar (nem no Canadá mistura) + detalhe z8 + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -400,16 +400,10 @@ def draw(z, box, p, ir, vis, when, west=None, style=None):
         gx, gy = geos_xy(LAT, LON, p)
         # V18: no norte (Canadá) cada pixel do GOES fica enorme e esticado; o "pixel mais próximo"
         # vira escadinha. Lá a temperatura é interpolada (bilinear) — as cores continuam as da paleta.
-        # V18: no norte (Canadá) cada pixel do GOES fica enorme e esticado; o "pixel mais próximo"
-        # vira escadinha. Lá a temperatura é interpolada (bilinear) — as cores continuam as da paleta.
-        # V2.37: no resto, pixel real do satélite, sem misturar.
-        latw = smoothstep((np.abs(LAT) - 42.0) / 12.0)
+        # V2.38: pixel real do satélite em TODO lugar, sem misturar nada (igual ao Prev Master):
+        # cada ponto da imagem pega a temperatura do pixel do GOES que está embaixo dele.
         def samp(g, x, y):
-            t = g.sample(x, y)
-            if latw.max() > 0:
-                tl = g.sample(x, y, order=1)
-                t = np.where(np.isfinite(tl) & np.isfinite(t), t * (1 - latw) + tl * latw, t)
-            return t - 273.15
+            return g.sample(x, y) - 273.15
         tc = samp(ir, gx, gy)
         use18 = np.zeros(tc.shape, bool)
         if west is not None and LON.min() < WEST_CUT + BLEND:
