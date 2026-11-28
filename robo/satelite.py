@@ -45,7 +45,7 @@ AK_W, AK_E, AK_S, AK_N = -170.0, -135.0, 51.0, 72.0     # V19: Alasca, só GOES-
 # V2.14 do site: de dia NÃO mistura mais o visível (deixava as nuvens granuladas). Fica igual à noite.
 # Pra voltar a usar o visível: variável SAT_DAYVIS=1.
 DAY_VIS = os.environ.get("SAT_DAYVIS", "0") == "1"
-VERSION = "hd13"                      # V2.36: detalhe z7 tropical + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
+VERSION = "hd14"                      # V2.36b: sem pixel retangular (temperatura interpolada) + detalhe z7 + cores iguais no norte                      # muda quando o desenho muda (força refazer as imagens)
 
 # ---------------------------------------------------------------- utilidades de mapa
 def merc_y(lat):
@@ -401,13 +401,11 @@ def draw(z, box, p, ir, vis, when, west=None, style=None):
         gx, gy = geos_xy(LAT, LON, p)
         # V18: no norte (Canadá) cada pixel do GOES fica enorme e esticado; o "pixel mais próximo"
         # vira escadinha. Lá a temperatura é interpolada (bilinear) — as cores continuam as da paleta.
-        latw = smoothstep((np.abs(LAT) - 42.0) / 12.0)
+        # V2.36b: interpolação (bilinear) da TEMPERATURA em todo lugar — o pixel do GOES longe do ponto
+        # abaixo do satélite é um retângulo esticado; com o "mais próximo" aparecia o retângulo. As cores
+        # continuam as da paleta (a temperatura é que é suavizada, igual ao Prev Master).
         def samp(g, x, y):
-            t = g.sample(x, y)
-            if latw.max() > 0:
-                tl = g.sample(x, y, order=1)
-                t = np.where(np.isfinite(tl) & np.isfinite(t), t * (1 - latw) + tl * latw, t)
-            return t - 273.15
+            return g.sample(x, y, order=1) - 273.15
         tc = samp(ir, gx, gy)
         use18 = np.zeros(tc.shape, bool)
         if west is not None and LON.min() < WEST_CUT + BLEND:
